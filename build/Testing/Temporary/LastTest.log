@@ -1,0 +1,801 @@
+Start testing: May 19 11:12 CEST
+----------------------------------------------------------
+1/5 Testing: smoke_emit_cpp
+1/5 Test: smoke_emit_cpp
+Command: "/workspace/build/sci-oh" "--emit-cpp" "/workspace/examples/ciao.sci"
+Directory: /workspace/build
+"smoke_emit_cpp" start time: May 19 11:12 CEST
+Output:
+----------------------------------------------------------
+#include <cmath>
+#include <exception>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+namespace Scioh {
+
+struct Value {
+    enum class Kind { Number, String, Boolean };
+
+    Kind kind;
+    double number = 0.0;
+    std::string string;
+    bool boolean = false;
+
+    Value(double value) : kind(Kind::Number), number(value) {}
+    Value(const char* value) : kind(Kind::String), string(value) {}
+    Value(std::string value) : kind(Kind::String), string(std::move(value)) {}
+    Value(bool value) : kind(Kind::Boolean), boolean(value) {}
+};
+
+std::string toText(const Value& value) {
+    switch (value.kind) {
+    case Value::Kind::Number: {
+        std::ostringstream out;
+        out << value.number;
+        return out.str();
+    }
+    case Value::Kind::String:
+        return value.string;
+    case Value::Kind::Boolean:
+        return value.boolean ? "sci" : "no";
+    }
+    return "";
+}
+
+double toNumber(const Value& value, const char* op) {
+    if (value.kind != Value::Kind::Number) {
+        throw std::runtime_error(std::string("lu segne '") + op + "' vo' numeri");
+    }
+    return value.number;
+}
+
+bool isTruthy(const Value& value) {
+    if (value.kind != Value::Kind::Boolean) {
+        throw std::runtime_error("'ie' vo' nu valore booleane: sci oppure no");
+    }
+    return value.boolean;
+}
+
+bool toBoolean(const Value& value, const char* op) {
+    if (value.kind != Value::Kind::Boolean) {
+        throw std::runtime_error(std::string("lu segne '") + op + "' vo' sci oppure no");
+    }
+    return value.boolean;
+}
+
+Value neg(const Value& value) {
+    return Value(-toNumber(value, "meno"));
+}
+
+Value logicNot(const Value& value) {
+    return Value(!toBoolean(value, "ne"));
+}
+
+Value logicAnd(const Value& left, const Value& right) {
+    return Value(toBoolean(left, "e") && toBoolean(right, "e"));
+}
+
+Value logicOr(const Value& left, const Value& right) {
+    return Value(toBoolean(left, "o") || toBoolean(right, "o"));
+}
+
+bool sameValue(const Value& left, const Value& right) {
+    if (left.kind != right.kind) {
+        return false;
+    }
+
+    switch (left.kind) {
+    case Value::Kind::Number:
+        return left.number == right.number;
+    case Value::Kind::String:
+        return left.string == right.string;
+    case Value::Kind::Boolean:
+        return left.boolean == right.boolean;
+    }
+    return false;
+}
+
+Value eq(const Value& left, const Value& right) {
+    return Value(sameValue(left, right));
+}
+
+Value ne(const Value& left, const Value& right) {
+    return Value(!sameValue(left, right));
+}
+
+Value lt(const Value& left, const Value& right) {
+    return Value(toNumber(left, "meno de") < toNumber(right, "meno de"));
+}
+
+Value le(const Value& left, const Value& right) {
+    return Value(toNumber(left, "meno uguale") <= toNumber(right, "meno uguale"));
+}
+
+Value gt(const Value& left, const Value& right) {
+    return Value(toNumber(left, "chiu de") > toNumber(right, "chiu de"));
+}
+
+Value ge(const Value& left, const Value& right) {
+    return Value(toNumber(left, "chiu uguale") >= toNumber(right, "chiu uguale"));
+}
+
+Value add(const Value& left, const Value& right) {
+    if (left.kind == Value::Kind::String || right.kind == Value::Kind::String) {
+        return Value(toText(left) + toText(right));
+    }
+    return Value(toNumber(left, "+") + toNumber(right, "+"));
+}
+
+Value sub(const Value& left, const Value& right) {
+    return Value(toNumber(left, "-") - toNumber(right, "-"));
+}
+
+Value mul(const Value& left, const Value& right) {
+    return Value(toNumber(left, "*") * toNumber(right, "*"));
+}
+
+Value div(const Value& left, const Value& right) {
+    const auto divisor = toNumber(right, "/");
+    if (divisor == 0.0) {
+        throw std::runtime_error("spart per zero");
+    }
+    return Value(toNumber(left, "/") / divisor);
+}
+
+std::ostream& operator<<(std::ostream& out, const Value& value) {
+    out << toText(value);
+    return out;
+}
+
+} // namespace Scioh
+
+int main() {
+    try {
+        Scioh::Value v0 = Scioh::Value("San Benedetto");
+        std::cout << Scioh::add(Scioh::Value("Oh, "), v0) << '\n';
+        v0 = Scioh::Value("sci-oh");
+        std::cout << Scioh::add(Scioh::Value("Mo ie "), v0) << '\n';
+        Scioh::Value v1 = Scioh::add(Scioh::Value(static_cast<double>(1)), Scioh::Value(static_cast<double>(1)));
+        std::cout << Scioh::add(Scioh::Value("Une chiu une fa "), v1) << '\n';
+        Scioh::Value v2 = Scioh::Value(static_cast<double>(18));
+        Scioh::Value v3 = Scioh::ge(v2, Scioh::Value(static_cast<double>(18)));
+        std::cout << Scioh::add(Scioh::Value("Maggiorenne? "), v3) << '\n';
+        Scioh::Value v4 = Scioh::Value(true);
+        std::cout << v4 << '\n';
+        Scioh::Value v5 = Scioh::Value(false);
+        if (Scioh::isTruthy(Scioh::logicAnd(Scioh::ge(v2, Scioh::Value(static_cast<double>(18))), Scioh::ne(v0, Scioh::Value("Luigi"))))) {
+            std::cout << Scioh::Value("Ie sincere") << '\n';
+        } else {
+            std::cout << Scioh::Value("Ne ie sincere") << '\n';
+        }
+        if (Scioh::isTruthy(Scioh::logicNot(v5))) {
+            std::cout << Scioh::Value("Ne ie stanche") << '\n';
+        }
+        Scioh::Value v6 = Scioh::Value(static_cast<double>(0));
+        while (Scioh::isTruthy(Scioh::lt(v6, Scioh::Value(static_cast<double>(3))))) {
+            std::cout << Scioh::add(Scioh::Value("Contatore "), v6) << '\n';
+            v6 = Scioh::add(v6, Scioh::Value(static_cast<double>(1)));
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "errore runtime: " << error.what() << '\n';
+        return 1;
+    }
+}
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Pass Reason:
+Required regular expression found. Regex=[int main]
+"smoke_emit_cpp" end time: May 19 11:12 CEST
+"smoke_emit_cpp" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/5 Testing: smoke_condition_emit_cpp
+2/5 Test: smoke_condition_emit_cpp
+Command: "/workspace/build/sci-oh" "--emit-cpp" "/workspace/examples/ciao.sci"
+Directory: /workspace/build
+"smoke_condition_emit_cpp" start time: May 19 11:12 CEST
+Output:
+----------------------------------------------------------
+#include <cmath>
+#include <exception>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+namespace Scioh {
+
+struct Value {
+    enum class Kind { Number, String, Boolean };
+
+    Kind kind;
+    double number = 0.0;
+    std::string string;
+    bool boolean = false;
+
+    Value(double value) : kind(Kind::Number), number(value) {}
+    Value(const char* value) : kind(Kind::String), string(value) {}
+    Value(std::string value) : kind(Kind::String), string(std::move(value)) {}
+    Value(bool value) : kind(Kind::Boolean), boolean(value) {}
+};
+
+std::string toText(const Value& value) {
+    switch (value.kind) {
+    case Value::Kind::Number: {
+        std::ostringstream out;
+        out << value.number;
+        return out.str();
+    }
+    case Value::Kind::String:
+        return value.string;
+    case Value::Kind::Boolean:
+        return value.boolean ? "sci" : "no";
+    }
+    return "";
+}
+
+double toNumber(const Value& value, const char* op) {
+    if (value.kind != Value::Kind::Number) {
+        throw std::runtime_error(std::string("lu segne '") + op + "' vo' numeri");
+    }
+    return value.number;
+}
+
+bool isTruthy(const Value& value) {
+    if (value.kind != Value::Kind::Boolean) {
+        throw std::runtime_error("'ie' vo' nu valore booleane: sci oppure no");
+    }
+    return value.boolean;
+}
+
+bool toBoolean(const Value& value, const char* op) {
+    if (value.kind != Value::Kind::Boolean) {
+        throw std::runtime_error(std::string("lu segne '") + op + "' vo' sci oppure no");
+    }
+    return value.boolean;
+}
+
+Value neg(const Value& value) {
+    return Value(-toNumber(value, "meno"));
+}
+
+Value logicNot(const Value& value) {
+    return Value(!toBoolean(value, "ne"));
+}
+
+Value logicAnd(const Value& left, const Value& right) {
+    return Value(toBoolean(left, "e") && toBoolean(right, "e"));
+}
+
+Value logicOr(const Value& left, const Value& right) {
+    return Value(toBoolean(left, "o") || toBoolean(right, "o"));
+}
+
+bool sameValue(const Value& left, const Value& right) {
+    if (left.kind != right.kind) {
+        return false;
+    }
+
+    switch (left.kind) {
+    case Value::Kind::Number:
+        return left.number == right.number;
+    case Value::Kind::String:
+        return left.string == right.string;
+    case Value::Kind::Boolean:
+        return left.boolean == right.boolean;
+    }
+    return false;
+}
+
+Value eq(const Value& left, const Value& right) {
+    return Value(sameValue(left, right));
+}
+
+Value ne(const Value& left, const Value& right) {
+    return Value(!sameValue(left, right));
+}
+
+Value lt(const Value& left, const Value& right) {
+    return Value(toNumber(left, "meno de") < toNumber(right, "meno de"));
+}
+
+Value le(const Value& left, const Value& right) {
+    return Value(toNumber(left, "meno uguale") <= toNumber(right, "meno uguale"));
+}
+
+Value gt(const Value& left, const Value& right) {
+    return Value(toNumber(left, "chiu de") > toNumber(right, "chiu de"));
+}
+
+Value ge(const Value& left, const Value& right) {
+    return Value(toNumber(left, "chiu uguale") >= toNumber(right, "chiu uguale"));
+}
+
+Value add(const Value& left, const Value& right) {
+    if (left.kind == Value::Kind::String || right.kind == Value::Kind::String) {
+        return Value(toText(left) + toText(right));
+    }
+    return Value(toNumber(left, "+") + toNumber(right, "+"));
+}
+
+Value sub(const Value& left, const Value& right) {
+    return Value(toNumber(left, "-") - toNumber(right, "-"));
+}
+
+Value mul(const Value& left, const Value& right) {
+    return Value(toNumber(left, "*") * toNumber(right, "*"));
+}
+
+Value div(const Value& left, const Value& right) {
+    const auto divisor = toNumber(right, "/");
+    if (divisor == 0.0) {
+        throw std::runtime_error("spart per zero");
+    }
+    return Value(toNumber(left, "/") / divisor);
+}
+
+std::ostream& operator<<(std::ostream& out, const Value& value) {
+    out << toText(value);
+    return out;
+}
+
+} // namespace Scioh
+
+int main() {
+    try {
+        Scioh::Value v0 = Scioh::Value("San Benedetto");
+        std::cout << Scioh::add(Scioh::Value("Oh, "), v0) << '\n';
+        v0 = Scioh::Value("sci-oh");
+        std::cout << Scioh::add(Scioh::Value("Mo ie "), v0) << '\n';
+        Scioh::Value v1 = Scioh::add(Scioh::Value(static_cast<double>(1)), Scioh::Value(static_cast<double>(1)));
+        std::cout << Scioh::add(Scioh::Value("Une chiu une fa "), v1) << '\n';
+        Scioh::Value v2 = Scioh::Value(static_cast<double>(18));
+        Scioh::Value v3 = Scioh::ge(v2, Scioh::Value(static_cast<double>(18)));
+        std::cout << Scioh::add(Scioh::Value("Maggiorenne? "), v3) << '\n';
+        Scioh::Value v4 = Scioh::Value(true);
+        std::cout << v4 << '\n';
+        Scioh::Value v5 = Scioh::Value(false);
+        if (Scioh::isTruthy(Scioh::logicAnd(Scioh::ge(v2, Scioh::Value(static_cast<double>(18))), Scioh::ne(v0, Scioh::Value("Luigi"))))) {
+            std::cout << Scioh::Value("Ie sincere") << '\n';
+        } else {
+            std::cout << Scioh::Value("Ne ie sincere") << '\n';
+        }
+        if (Scioh::isTruthy(Scioh::logicNot(v5))) {
+            std::cout << Scioh::Value("Ne ie stanche") << '\n';
+        }
+        Scioh::Value v6 = Scioh::Value(static_cast<double>(0));
+        while (Scioh::isTruthy(Scioh::lt(v6, Scioh::Value(static_cast<double>(3))))) {
+            std::cout << Scioh::add(Scioh::Value("Contatore "), v6) << '\n';
+            v6 = Scioh::add(v6, Scioh::Value(static_cast<double>(1)));
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "errore runtime: " << error.what() << '\n';
+        return 1;
+    }
+}
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Pass Reason:
+Required regular expression found. Regex=[Scioh::isTruthy]
+"smoke_condition_emit_cpp" end time: May 19 11:12 CEST
+"smoke_condition_emit_cpp" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/5 Testing: smoke_logic_emit_cpp
+3/5 Test: smoke_logic_emit_cpp
+Command: "/workspace/build/sci-oh" "--emit-cpp" "/workspace/examples/ciao.sci"
+Directory: /workspace/build
+"smoke_logic_emit_cpp" start time: May 19 11:12 CEST
+Output:
+----------------------------------------------------------
+#include <cmath>
+#include <exception>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+namespace Scioh {
+
+struct Value {
+    enum class Kind { Number, String, Boolean };
+
+    Kind kind;
+    double number = 0.0;
+    std::string string;
+    bool boolean = false;
+
+    Value(double value) : kind(Kind::Number), number(value) {}
+    Value(const char* value) : kind(Kind::String), string(value) {}
+    Value(std::string value) : kind(Kind::String), string(std::move(value)) {}
+    Value(bool value) : kind(Kind::Boolean), boolean(value) {}
+};
+
+std::string toText(const Value& value) {
+    switch (value.kind) {
+    case Value::Kind::Number: {
+        std::ostringstream out;
+        out << value.number;
+        return out.str();
+    }
+    case Value::Kind::String:
+        return value.string;
+    case Value::Kind::Boolean:
+        return value.boolean ? "sci" : "no";
+    }
+    return "";
+}
+
+double toNumber(const Value& value, const char* op) {
+    if (value.kind != Value::Kind::Number) {
+        throw std::runtime_error(std::string("lu segne '") + op + "' vo' numeri");
+    }
+    return value.number;
+}
+
+bool isTruthy(const Value& value) {
+    if (value.kind != Value::Kind::Boolean) {
+        throw std::runtime_error("'ie' vo' nu valore booleane: sci oppure no");
+    }
+    return value.boolean;
+}
+
+bool toBoolean(const Value& value, const char* op) {
+    if (value.kind != Value::Kind::Boolean) {
+        throw std::runtime_error(std::string("lu segne '") + op + "' vo' sci oppure no");
+    }
+    return value.boolean;
+}
+
+Value neg(const Value& value) {
+    return Value(-toNumber(value, "meno"));
+}
+
+Value logicNot(const Value& value) {
+    return Value(!toBoolean(value, "ne"));
+}
+
+Value logicAnd(const Value& left, const Value& right) {
+    return Value(toBoolean(left, "e") && toBoolean(right, "e"));
+}
+
+Value logicOr(const Value& left, const Value& right) {
+    return Value(toBoolean(left, "o") || toBoolean(right, "o"));
+}
+
+bool sameValue(const Value& left, const Value& right) {
+    if (left.kind != right.kind) {
+        return false;
+    }
+
+    switch (left.kind) {
+    case Value::Kind::Number:
+        return left.number == right.number;
+    case Value::Kind::String:
+        return left.string == right.string;
+    case Value::Kind::Boolean:
+        return left.boolean == right.boolean;
+    }
+    return false;
+}
+
+Value eq(const Value& left, const Value& right) {
+    return Value(sameValue(left, right));
+}
+
+Value ne(const Value& left, const Value& right) {
+    return Value(!sameValue(left, right));
+}
+
+Value lt(const Value& left, const Value& right) {
+    return Value(toNumber(left, "meno de") < toNumber(right, "meno de"));
+}
+
+Value le(const Value& left, const Value& right) {
+    return Value(toNumber(left, "meno uguale") <= toNumber(right, "meno uguale"));
+}
+
+Value gt(const Value& left, const Value& right) {
+    return Value(toNumber(left, "chiu de") > toNumber(right, "chiu de"));
+}
+
+Value ge(const Value& left, const Value& right) {
+    return Value(toNumber(left, "chiu uguale") >= toNumber(right, "chiu uguale"));
+}
+
+Value add(const Value& left, const Value& right) {
+    if (left.kind == Value::Kind::String || right.kind == Value::Kind::String) {
+        return Value(toText(left) + toText(right));
+    }
+    return Value(toNumber(left, "+") + toNumber(right, "+"));
+}
+
+Value sub(const Value& left, const Value& right) {
+    return Value(toNumber(left, "-") - toNumber(right, "-"));
+}
+
+Value mul(const Value& left, const Value& right) {
+    return Value(toNumber(left, "*") * toNumber(right, "*"));
+}
+
+Value div(const Value& left, const Value& right) {
+    const auto divisor = toNumber(right, "/");
+    if (divisor == 0.0) {
+        throw std::runtime_error("spart per zero");
+    }
+    return Value(toNumber(left, "/") / divisor);
+}
+
+std::ostream& operator<<(std::ostream& out, const Value& value) {
+    out << toText(value);
+    return out;
+}
+
+} // namespace Scioh
+
+int main() {
+    try {
+        Scioh::Value v0 = Scioh::Value("San Benedetto");
+        std::cout << Scioh::add(Scioh::Value("Oh, "), v0) << '\n';
+        v0 = Scioh::Value("sci-oh");
+        std::cout << Scioh::add(Scioh::Value("Mo ie "), v0) << '\n';
+        Scioh::Value v1 = Scioh::add(Scioh::Value(static_cast<double>(1)), Scioh::Value(static_cast<double>(1)));
+        std::cout << Scioh::add(Scioh::Value("Une chiu une fa "), v1) << '\n';
+        Scioh::Value v2 = Scioh::Value(static_cast<double>(18));
+        Scioh::Value v3 = Scioh::ge(v2, Scioh::Value(static_cast<double>(18)));
+        std::cout << Scioh::add(Scioh::Value("Maggiorenne? "), v3) << '\n';
+        Scioh::Value v4 = Scioh::Value(true);
+        std::cout << v4 << '\n';
+        Scioh::Value v5 = Scioh::Value(false);
+        if (Scioh::isTruthy(Scioh::logicAnd(Scioh::ge(v2, Scioh::Value(static_cast<double>(18))), Scioh::ne(v0, Scioh::Value("Luigi"))))) {
+            std::cout << Scioh::Value("Ie sincere") << '\n';
+        } else {
+            std::cout << Scioh::Value("Ne ie sincere") << '\n';
+        }
+        if (Scioh::isTruthy(Scioh::logicNot(v5))) {
+            std::cout << Scioh::Value("Ne ie stanche") << '\n';
+        }
+        Scioh::Value v6 = Scioh::Value(static_cast<double>(0));
+        while (Scioh::isTruthy(Scioh::lt(v6, Scioh::Value(static_cast<double>(3))))) {
+            std::cout << Scioh::add(Scioh::Value("Contatore "), v6) << '\n';
+            v6 = Scioh::add(v6, Scioh::Value(static_cast<double>(1)));
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "errore runtime: " << error.what() << '\n';
+        return 1;
+    }
+}
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Pass Reason:
+Required regular expression found. Regex=[Scioh::logicAnd]
+"smoke_logic_emit_cpp" end time: May 19 11:12 CEST
+"smoke_logic_emit_cpp" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/5 Testing: smoke_while_emit_cpp
+4/5 Test: smoke_while_emit_cpp
+Command: "/workspace/build/sci-oh" "--emit-cpp" "/workspace/examples/ciao.sci"
+Directory: /workspace/build
+"smoke_while_emit_cpp" start time: May 19 11:12 CEST
+Output:
+----------------------------------------------------------
+#include <cmath>
+#include <exception>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+namespace Scioh {
+
+struct Value {
+    enum class Kind { Number, String, Boolean };
+
+    Kind kind;
+    double number = 0.0;
+    std::string string;
+    bool boolean = false;
+
+    Value(double value) : kind(Kind::Number), number(value) {}
+    Value(const char* value) : kind(Kind::String), string(value) {}
+    Value(std::string value) : kind(Kind::String), string(std::move(value)) {}
+    Value(bool value) : kind(Kind::Boolean), boolean(value) {}
+};
+
+std::string toText(const Value& value) {
+    switch (value.kind) {
+    case Value::Kind::Number: {
+        std::ostringstream out;
+        out << value.number;
+        return out.str();
+    }
+    case Value::Kind::String:
+        return value.string;
+    case Value::Kind::Boolean:
+        return value.boolean ? "sci" : "no";
+    }
+    return "";
+}
+
+double toNumber(const Value& value, const char* op) {
+    if (value.kind != Value::Kind::Number) {
+        throw std::runtime_error(std::string("lu segne '") + op + "' vo' numeri");
+    }
+    return value.number;
+}
+
+bool isTruthy(const Value& value) {
+    if (value.kind != Value::Kind::Boolean) {
+        throw std::runtime_error("'ie' vo' nu valore booleane: sci oppure no");
+    }
+    return value.boolean;
+}
+
+bool toBoolean(const Value& value, const char* op) {
+    if (value.kind != Value::Kind::Boolean) {
+        throw std::runtime_error(std::string("lu segne '") + op + "' vo' sci oppure no");
+    }
+    return value.boolean;
+}
+
+Value neg(const Value& value) {
+    return Value(-toNumber(value, "meno"));
+}
+
+Value logicNot(const Value& value) {
+    return Value(!toBoolean(value, "ne"));
+}
+
+Value logicAnd(const Value& left, const Value& right) {
+    return Value(toBoolean(left, "e") && toBoolean(right, "e"));
+}
+
+Value logicOr(const Value& left, const Value& right) {
+    return Value(toBoolean(left, "o") || toBoolean(right, "o"));
+}
+
+bool sameValue(const Value& left, const Value& right) {
+    if (left.kind != right.kind) {
+        return false;
+    }
+
+    switch (left.kind) {
+    case Value::Kind::Number:
+        return left.number == right.number;
+    case Value::Kind::String:
+        return left.string == right.string;
+    case Value::Kind::Boolean:
+        return left.boolean == right.boolean;
+    }
+    return false;
+}
+
+Value eq(const Value& left, const Value& right) {
+    return Value(sameValue(left, right));
+}
+
+Value ne(const Value& left, const Value& right) {
+    return Value(!sameValue(left, right));
+}
+
+Value lt(const Value& left, const Value& right) {
+    return Value(toNumber(left, "meno de") < toNumber(right, "meno de"));
+}
+
+Value le(const Value& left, const Value& right) {
+    return Value(toNumber(left, "meno uguale") <= toNumber(right, "meno uguale"));
+}
+
+Value gt(const Value& left, const Value& right) {
+    return Value(toNumber(left, "chiu de") > toNumber(right, "chiu de"));
+}
+
+Value ge(const Value& left, const Value& right) {
+    return Value(toNumber(left, "chiu uguale") >= toNumber(right, "chiu uguale"));
+}
+
+Value add(const Value& left, const Value& right) {
+    if (left.kind == Value::Kind::String || right.kind == Value::Kind::String) {
+        return Value(toText(left) + toText(right));
+    }
+    return Value(toNumber(left, "+") + toNumber(right, "+"));
+}
+
+Value sub(const Value& left, const Value& right) {
+    return Value(toNumber(left, "-") - toNumber(right, "-"));
+}
+
+Value mul(const Value& left, const Value& right) {
+    return Value(toNumber(left, "*") * toNumber(right, "*"));
+}
+
+Value div(const Value& left, const Value& right) {
+    const auto divisor = toNumber(right, "/");
+    if (divisor == 0.0) {
+        throw std::runtime_error("spart per zero");
+    }
+    return Value(toNumber(left, "/") / divisor);
+}
+
+std::ostream& operator<<(std::ostream& out, const Value& value) {
+    out << toText(value);
+    return out;
+}
+
+} // namespace Scioh
+
+int main() {
+    try {
+        Scioh::Value v0 = Scioh::Value("San Benedetto");
+        std::cout << Scioh::add(Scioh::Value("Oh, "), v0) << '\n';
+        v0 = Scioh::Value("sci-oh");
+        std::cout << Scioh::add(Scioh::Value("Mo ie "), v0) << '\n';
+        Scioh::Value v1 = Scioh::add(Scioh::Value(static_cast<double>(1)), Scioh::Value(static_cast<double>(1)));
+        std::cout << Scioh::add(Scioh::Value("Une chiu une fa "), v1) << '\n';
+        Scioh::Value v2 = Scioh::Value(static_cast<double>(18));
+        Scioh::Value v3 = Scioh::ge(v2, Scioh::Value(static_cast<double>(18)));
+        std::cout << Scioh::add(Scioh::Value("Maggiorenne? "), v3) << '\n';
+        Scioh::Value v4 = Scioh::Value(true);
+        std::cout << v4 << '\n';
+        Scioh::Value v5 = Scioh::Value(false);
+        if (Scioh::isTruthy(Scioh::logicAnd(Scioh::ge(v2, Scioh::Value(static_cast<double>(18))), Scioh::ne(v0, Scioh::Value("Luigi"))))) {
+            std::cout << Scioh::Value("Ie sincere") << '\n';
+        } else {
+            std::cout << Scioh::Value("Ne ie sincere") << '\n';
+        }
+        if (Scioh::isTruthy(Scioh::logicNot(v5))) {
+            std::cout << Scioh::Value("Ne ie stanche") << '\n';
+        }
+        Scioh::Value v6 = Scioh::Value(static_cast<double>(0));
+        while (Scioh::isTruthy(Scioh::lt(v6, Scioh::Value(static_cast<double>(3))))) {
+            std::cout << Scioh::add(Scioh::Value("Contatore "), v6) << '\n';
+            v6 = Scioh::add(v6, Scioh::Value(static_cast<double>(1)));
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "errore runtime: " << error.what() << '\n';
+        return 1;
+    }
+}
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Pass Reason:
+Required regular expression found. Regex=[while \(Scioh::isTruthy]
+"smoke_while_emit_cpp" end time: May 19 11:12 CEST
+"smoke_while_emit_cpp" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/5 Testing: version_prints_motto
+5/5 Test: version_prints_motto
+Command: "/workspace/build/sci-oh" "--version"
+Directory: /workspace/build
+"version_prints_motto" start time: May 19 11:12 CEST
+Output:
+----------------------------------------------------------
+sci-oh 0.1.0
+Lu compilatore che compila quann ie pare
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Pass Reason:
+Required regular expression found. Regex=[Lu compilatore che compila quann ie pare]
+"version_prints_motto" end time: May 19 11:12 CEST
+"version_prints_motto" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: May 19 11:12 CEST

@@ -1,0 +1,16 @@
+# Local environment / Claude Code jail config
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+Dockerfile*
