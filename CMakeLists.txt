@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(sci-oh
     src/main.cpp
     src/scioh/Codegen.cpp
+    src/scioh/Infer.cpp
     src/scioh/Lexer.cpp
     src/scioh/Parser.cpp
 )

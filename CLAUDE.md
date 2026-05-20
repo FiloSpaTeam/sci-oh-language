@@ -14,6 +14,7 @@ cd /workspace/build
   ../src/main.cpp \
   ../src/scioh/Lexer.cpp \
   ../src/scioh/Parser.cpp \
+  ../src/scioh/Infer.cpp \
   ../src/scioh/Codegen.cpp
 ```
 
