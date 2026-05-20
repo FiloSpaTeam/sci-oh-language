@@ -311,6 +311,11 @@ void Infer::inferStmt(Stmt& stmt, Env& env) {
         // Register the function in env with a fresh return var (enables recursion)
         auto retVar = fresh();
         auto fnType = Ty::fun(paramVars, retVar);
+        // Unify pass-2 vars with pass-1 pre-registration vars so that constraints
+        // from mutual-recursive callers (processed before this function) propagate
+        // into this function's body analysis.
+        if (auto it = env.find(fn.name); it != env.end() && it->second)
+            unify(fnType, it->second);
         fnEnv[fn.name] = fnType;
         env[fn.name]   = fnType;
 
@@ -359,6 +364,12 @@ void Infer::run(Program& program) {
     // Pass 2: infer everything
     for (const auto& stmt : program.statements)
         inferStmt(*stmt, env);
+
+    // Pass 3: resolve lingering type variables in fnTypes_ (handles forward references
+    // where a function's return type was inferred via a call to a later-defined function
+    // whose type was still a fresh variable at the time of inference).
+    for (auto& [name, ty] : fnTypes_)
+        ty = apply(ty);
 }
 
 } // namespace scioh
