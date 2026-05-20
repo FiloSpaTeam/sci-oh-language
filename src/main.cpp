@@ -23,7 +23,10 @@ struct Options {
     std::string outputPath;
 };
 
-constexpr std::string_view kVersion = "0.1.0";
+#ifndef SCIOH_VERSION
+#define SCIOH_VERSION "0.1.0"
+#endif
+constexpr std::string_view kVersion = SCIOH_VERSION;
 constexpr std::string_view kMotto = "Lu compilatore che compila quann ie pare";
 
 void printUsage(std::ostream& out) {

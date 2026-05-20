@@ -1,4 +1,17 @@
-# Local environment / Claude Code jail config
+# Build directory (CMake artifacts + compiled binaries)
+build/
+
+# Compiled binaries at root level
+sci-oh
+sci-oh.exe
+
+# Object files / static libs
+*.o
+*.a
+*.so
+*.dylib
+
+# Environment / secrets
 .env
 .env.*
 !.env.example
@@ -13,4 +26,8 @@ Thumbs.db
 *.swp
 *~
 
+# Docker (local dev configs)
 Dockerfile*
+
+# Claude Code per-user overrides (project settings.json is tracked)
+.claude/settings.local.json
