@@ -140,7 +140,7 @@ int buildExecutable(const std::string& cpp, const std::string& outputPath) {
     }
 
     const std::filesystem::path output = outputPath.empty() ? "a.out" : outputPath;
-    const std::string command = std::string(compiler) + " -std=c++17 -O2 " + shellQuote(cppPath) + " -o " + shellQuote(output);
+    const std::string command = std::string(compiler) + " -std=c++17 -O2 -flto " + shellQuote(cppPath) + " -o " + shellQuote(output);
     const int result = std::system(command.c_str());
     std::filesystem::remove(cppPath);
     return result;
