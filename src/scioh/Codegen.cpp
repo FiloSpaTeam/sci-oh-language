@@ -767,7 +767,8 @@ void Codegen::emitStatement(const Stmt& stmt, std::ostream& out, int indentLevel
             emitStatement(*s, tmp, indentLevel + 2);
             body << tmp.str();
         }
-        body << indent(indentLevel + 2) << "return Scioh::Value(false);\n";
+        if (fn.body.empty() || fn.body.back()->kind != StmtKind::Return)
+            body << indent(indentLevel + 2) << "return Scioh::Value(false);\n";
         body << indent(indentLevel + 1) << "} catch (const Scioh::ReturnValue& ret) {\n";
         body << indent(indentLevel + 2) << "return ret.value;\n";
         body << indent(indentLevel + 1) << "}\n";
@@ -794,7 +795,9 @@ std::string Codegen::emitExpr(const Expr& expr) {
     switch (expr.kind) {
     case ExprKind::Number: {
         const auto& number = static_cast<const NumberExpr&>(expr);
-        return "Scioh::Value(static_cast<double>(" + number.value + "))";
+        std::string lit = number.value;
+        if (lit.find('.') == std::string::npos) lit += ".0";
+        return "Scioh::Value(" + lit + ")";
     }
     case ExprKind::String: {
         const auto& string = static_cast<const StringExpr&>(expr);
@@ -818,15 +821,29 @@ std::string Codegen::emitExpr(const Expr& expr) {
     }
     case ExprKind::Call: {
         const auto& call = static_cast<const CallExpr&>(expr);
+        // Direct call to a statically-typed function: avoids vector allocation + apply dispatch
+        if (call.callee->kind == ExprKind::Identifier) {
+            const auto& calleeName = static_cast<const IdentifierExpr&>(*call.callee).name;
+            auto it = typedFns_.find(calleeName);
+            if (it != typedFns_.end()) {
+                const auto ps = it->second->params();
+                if (call.args.size() == ps.size()) {
+                    std::string result = "Scioh::Value(fn_" + calleeName + "_typed(";
+                    for (std::size_t i = 0; i < ps.size(); ++i) {
+                        if (i) result += ", ";
+                        result += "(" + emitExpr(*call.args[i]) + ")." +
+                                  (ps[i]->isNum() ? "asNumber()" : "asBoolean()");
+                    }
+                    return result + "))";
+                }
+            }
+        }
         std::string result = "Scioh::apply(" + emitExpr(*call.callee) + ", {";
         for (std::size_t i = 0; i < call.args.size(); ++i) {
-            if (i > 0) {
-                result += ", ";
-            }
+            if (i > 0) result += ", ";
             result += emitExpr(*call.args[i]);
         }
-        result += "})";
-        return result;
+        return result + "})";
     }
     case ExprKind::If: {
         const auto& ifExpr = static_cast<const IfExpr&>(expr);
@@ -1090,18 +1107,21 @@ std::string Codegen::emitTypedExpr(const Expr& expr, const TypedEnv& tenv) {
         if (cond.empty()) return "";
         if (!expr.ty || !expr.ty->isPrimitive()) return "";
         const auto retT = nativeType(expr.ty);
+        std::ostringstream thenOss, elseOss;
+        TypedEnv thenEnv = tenv, elseEnv = tenv;
+        auto thenResult = emitTypedBody(ifExpr.thenBranch, thenOss, 1, thenEnv);
+        if (thenResult.empty()) return "";
+        auto elseResult = emitTypedBody(ifExpr.elseBranch, elseOss, 1, elseEnv);
+        if (elseResult.empty()) return "";
+        // Simple branches (no let bindings) → inline ternary; avoids IIFE overhead
+        if (thenOss.str().empty() && elseOss.str().empty())
+            return "(" + cond + " ? " + thenResult + " : " + elseResult + ")";
         std::ostringstream oss;
         oss << "[&]() -> " << retT << " {\n";
         oss << "if (" << cond << ") {\n";
-        TypedEnv thenEnv = tenv;
-        auto thenResult = emitTypedBody(ifExpr.thenBranch, oss, 1, thenEnv);
-        if (thenResult.empty()) return "";
-        oss << "return " << thenResult << ";\n";
+        oss << thenOss.str() << "return " << thenResult << ";\n";
         oss << "} else {\n";
-        TypedEnv elseEnv = tenv;
-        auto elseResult = emitTypedBody(ifExpr.elseBranch, oss, 1, elseEnv);
-        if (elseResult.empty()) return "";
-        oss << "return " << elseResult << ";\n";
+        oss << elseOss.str() << "return " << elseResult << ";\n";
         oss << "}}()";
         return oss.str();
     }
