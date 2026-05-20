@@ -121,93 +121,197 @@ void Codegen::emit(const Program& program, std::ostream& out) {
     functionSymbols_.clear();
     nextSymbol_ = 0;
 
-    out << R"SCIOH(#include <cmath>
+    out << R"SCIOH(#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <exception>
 #include <functional>
 #include <iostream>
-#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace Scioh {
 
-struct Cons;
-using List = std::shared_ptr<const Cons>;
+// --- Intrusive reference counting ---
 
-// Value is a tagged union over all sci-oh runtime types.
-// Lists use persistent cons-cells: cons/head/tail are all O(1) with structural sharing.
-struct Value {
-    struct FnBox;
+struct RefCounted {
+    mutable std::atomic<int> refCount{1};
+    virtual ~RefCounted() = default;
+};
+inline void addRef(const RefCounted* p) noexcept {
+    p->refCount.fetch_add(1, std::memory_order_relaxed);
+}
+inline void release(const RefCounted* p) noexcept {
+    if (p->refCount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete p;
+}
 
-    std::variant<
-        double,                                       // 0 Number
-        bool,                                         // 1 Boolean
-        std::string,                                  // 2 String
-        std::shared_ptr<FnBox>,                       // 3 Function
-        List,                                         // 4 List (persistent cons-cell)
-        std::pair<bool, std::shared_ptr<Value>>       // 5 Result {ok, inner}
-    > data;
+// --- Forward declarations ---
+struct StringBox; struct FnBox; struct Cons; struct ResultBox;
 
-    enum class Kind { Number = 0, Boolean = 1, String = 2, Function = 3, List = 4, Result = 5 };
-    Kind kind() const noexcept { return static_cast<Kind>(data.index()); }
+// --- NaN-boxed Value (8 bytes) ---
+//
+// Layout: every Value is one uint64_t.
+//   Regular double  → stored as-is (isBoxed() == false)
+//   Tagged value    → bits 62..50 = 1111'1111'1100 (kBoxMask pattern)
+//
+// The hardware canonical quiet NaN (0x7FF8...) has bit 50 = 0, so it never
+// collides with our tags (which require bit 50 = 1).
+//
+// Top-16-bit tags:
+//   0x7FFC  false       (immediate)
+//   0x7FFD  true        (immediate)
+//   0x7FFE  empty list  (immediate)
+//   0xFFFC  StringBox*  (low 48 bits = pointer)
+//   0xFFFD  FnBox*
+//   0xFFFE  Cons*
+//   0xFFFF  ResultBox*
 
-    struct FnBox { std::function<Value(std::vector<Value>)> fn; };
+class Value {
+public:
+    static constexpr uint64_t kBoxMask   = 0x7FFC000000000000ULL;
+    static constexpr uint64_t kTagMask16 = 0xFFFF000000000000ULL;
+    static constexpr uint64_t kPtrMask   = 0x0000FFFFFFFFFFFFULL;
+    static constexpr uint64_t kTagFalse  = 0x7FFC000000000000ULL;
+    static constexpr uint64_t kTagTrue   = 0x7FFD000000000000ULL;
+    static constexpr uint64_t kTagNil    = 0x7FFE000000000000ULL;
+    static constexpr uint64_t kTagStr    = 0xFFFC000000000000ULL;
+    static constexpr uint64_t kTagFn     = 0xFFFD000000000000ULL;
+    static constexpr uint64_t kTagCons   = 0xFFFE000000000000ULL;
+    static constexpr uint64_t kTagResult = 0xFFFF000000000000ULL;
 
-    Value() : data(false) {}
-    Value(double n) : data(n) {}
-    Value(bool b) : data(b) {}
-    Value(const char* s) : data(std::string(s)) {}
-    Value(std::string s) : data(std::move(s)) {}
-    Value(std::function<Value(std::vector<Value>)> fn)
-        : data(std::make_shared<FnBox>(FnBox{std::move(fn)})) {}
-    explicit Value(List l) : data(std::move(l)) {}
+    enum class Kind { Number, Boolean, String, Function, List, Result };
 
-    double                   asNumber()   const { return std::get<double>(data); }
-    bool                     asBoolean()  const { return std::get<bool>(data); }
-    const std::string&       asString()   const { return std::get<std::string>(data); }
-    const std::function<Value(std::vector<Value>)>& asFunction() const {
-        return std::get<std::shared_ptr<FnBox>>(data)->fn;
+    Value()                noexcept : bits_(kTagFalse) {}
+    explicit Value(double d) noexcept { std::memcpy(&bits_, &d, 8); }
+    Value(bool b)          noexcept : bits_(b ? kTagTrue : kTagFalse) {}
+    Value(const char* s)            : Value(std::string(s)) {}
+    Value(std::string s);
+    Value(std::function<Value(std::vector<Value>)> fn);
+    Value(const Value& o)  noexcept : bits_(o.bits_) { if (auto* p = heapPtr()) addRef(p); }
+    Value(Value&& o)       noexcept : bits_(o.bits_) { o.bits_ = kTagFalse; }
+    ~Value()               noexcept { if (auto* p = heapPtr()) release(p); }
+
+    Value& operator=(const Value& o) noexcept {
+        if (this != &o) {
+            if (auto* p = heapPtr()) release(p);
+            bits_ = o.bits_;
+            if (auto* p = heapPtr()) addRef(p);
+        }
+        return *this;
     }
-    const List& asList() const { return std::get<List>(data); }
+    Value& operator=(Value&& o) noexcept {
+        if (this != &o) {
+            if (auto* p = heapPtr()) release(p);
+            bits_ = o.bits_; o.bits_ = kTagFalse;
+        }
+        return *this;
+    }
 
-    bool         listEmpty() const { return std::get<List>(data) == nullptr; }
-    const Value& listHead()  const;
-    Value        listTail()  const;
+    Kind kind() const noexcept {
+        if (!isBoxed()) return Kind::Number;
+        const auto t = bits_ & kTagMask16;
+        if (t == kTagFalse || t == kTagTrue) return Kind::Boolean;
+        if (t == kTagNil   || t == kTagCons) return Kind::List;
+        if (t == kTagStr)    return Kind::String;
+        if (t == kTagFn)     return Kind::Function;
+        return Kind::Result;
+    }
 
-    bool resultOk()            const { return std::get<std::pair<bool, std::shared_ptr<Value>>>(data).first; }
-    const Value& resultInner() const { return *std::get<std::pair<bool, std::shared_ptr<Value>>>(data).second; }
+    double             asNumber()  const noexcept { double d; std::memcpy(&d, &bits_, 8); return d; }
+    bool               asBoolean() const noexcept { return bits_ == kTagTrue; }
+    const std::string& asString()  const noexcept;
+    const std::function<Value(std::vector<Value>)>& asFunction() const noexcept;
 
-    static Value emptyList() { return Value(List{nullptr}); }
+    bool         listEmpty() const noexcept { return (bits_ & kTagMask16) == kTagNil; }
+    const Value& listHead()  const noexcept;
+    Value        listTail()  const noexcept;
+
+    bool         resultOk()    const noexcept;
+    const Value& resultInner() const noexcept;
+
+    static Value emptyList() noexcept { Value v; v.bits_ = kTagNil; return v; }
+    static Value makeCons(Value head, Value tail);
     static Value fromVector(std::vector<Value> v);
+    static Value ok(Value inner);
+    static Value err(Value inner);
 
-    static Value ok(Value inner) {
-        Value v;
-        v.data = std::pair<bool, std::shared_ptr<Value>>{
-            true, std::make_shared<Value>(std::move(inner))};
-        return v;
+private:
+    uint64_t bits_;
+
+    bool isBoxed() const noexcept { return (bits_ & kBoxMask) == kBoxMask; }
+    RefCounted* heapPtr() const noexcept {
+        const auto t = bits_ & kTagMask16;
+        if (t == kTagStr || t == kTagFn || t == kTagCons || t == kTagResult)
+            return reinterpret_cast<RefCounted*>(bits_ & kPtrMask);
+        return nullptr;
     }
-    static Value err(Value inner) {
-        Value v;
-        v.data = std::pair<bool, std::shared_ptr<Value>>{
-            false, std::make_shared<Value>(std::move(inner))};
-        return v;
-    }
+    static Value fromBits(uint64_t b) noexcept { Value v; v.bits_ = b; return v; }
 };
 
-struct Cons { Value head; List tail; };
+struct StringBox : RefCounted {
+    std::string s;
+    explicit StringBox(std::string v) : s(std::move(v)) {}
+};
+struct FnBox : RefCounted {
+    std::function<Value(std::vector<Value>)> fn;
+};
+struct Cons : RefCounted {
+    Value head, tail;
+    Cons(Value h, Value t) : head(std::move(h)), tail(std::move(t)) {}
+};
+struct ResultBox : RefCounted {
+    bool ok; Value inner;
+    ResultBox(bool ok_, Value v) : ok(ok_), inner(std::move(v)) {}
+};
 
-inline const Value& Value::listHead() const { return std::get<List>(data)->head; }
-inline Value        Value::listTail() const { return Value(std::get<List>(data)->tail); }
-inline Value        Value::fromVector(std::vector<Value> v) {
-    List cur = nullptr;
+inline Value::Value(std::string s) {
+    auto* p = new StringBox(std::move(s));
+    bits_ = kTagStr | reinterpret_cast<uint64_t>(p);
+}
+inline Value::Value(std::function<Value(std::vector<Value>)> fn) {
+    auto* p = new FnBox; p->fn = std::move(fn);
+    bits_ = kTagFn | reinterpret_cast<uint64_t>(p);
+}
+inline const std::string& Value::asString() const noexcept {
+    return reinterpret_cast<StringBox*>(bits_ & kPtrMask)->s;
+}
+inline const std::function<Value(std::vector<Value>)>& Value::asFunction() const noexcept {
+    return reinterpret_cast<FnBox*>(bits_ & kPtrMask)->fn;
+}
+inline const Value& Value::listHead() const noexcept {
+    return reinterpret_cast<Cons*>(bits_ & kPtrMask)->head;
+}
+inline Value Value::listTail() const noexcept {
+    return reinterpret_cast<Cons*>(bits_ & kPtrMask)->tail;
+}
+inline bool Value::resultOk() const noexcept {
+    return reinterpret_cast<ResultBox*>(bits_ & kPtrMask)->ok;
+}
+inline const Value& Value::resultInner() const noexcept {
+    return reinterpret_cast<ResultBox*>(bits_ & kPtrMask)->inner;
+}
+inline Value Value::makeCons(Value head, Value tail) {
+    auto* p = new Cons{std::move(head), std::move(tail)};
+    return fromBits(kTagCons | reinterpret_cast<uint64_t>(p));
+}
+inline Value Value::fromVector(std::vector<Value> v) {
+    Value cur = emptyList();
     for (int i = static_cast<int>(v.size()) - 1; i >= 0; --i)
-        cur = std::make_shared<Cons>(Cons{std::move(v[i]), std::move(cur)});
-    return Value(std::move(cur));
+        cur = makeCons(std::move(v[i]), std::move(cur));
+    return cur;
+}
+inline Value Value::ok(Value inner) {
+    auto* p = new ResultBox{true, std::move(inner)};
+    return fromBits(kTagResult | reinterpret_cast<uint64_t>(p));
+}
+inline Value Value::err(Value inner) {
+    auto* p = new ResultBox{false, std::move(inner)};
+    return fromBits(kTagResult | reinterpret_cast<uint64_t>(p));
 }
 
 struct ReturnValue { Value value; };
@@ -237,26 +341,18 @@ std::string toText(const Value& value) {
         const double n = value.asNumber();
         if (n == std::floor(n) && std::abs(n) < 1e15)
             return std::to_string(static_cast<long long>(n));
-        std::ostringstream out;
-        out << n;
-        return out.str();
+        std::ostringstream out; out << n; return out.str();
     }
-    case Value::Kind::Boolean:
-        return value.asBoolean() ? "sci" : "no";
-    case Value::Kind::String:
-        return value.asString();
-    case Value::Kind::Function:
-        return "<funzione>";
+    case Value::Kind::Boolean:  return value.asBoolean() ? "sci" : "no";
+    case Value::Kind::String:   return value.asString();
+    case Value::Kind::Function: return "<funzione>";
     case Value::Kind::List: {
-        std::string out = "[";
-        bool first = true;
-        for (const Cons* c = value.asList().get(); c; c = c->tail.get()) {
+        std::string out = "["; bool first = true;
+        for (Value c = value; !c.listEmpty(); c = c.listTail()) {
             if (!first) out += ", ";
-            out += toText(c->head);
-            first = false;
+            out += toText(c.listHead()); first = false;
         }
-        out += "]";
-        return out;
+        return out + "]";
     }
     case Value::Kind::Result:
         return value.resultOk()
@@ -285,16 +381,9 @@ bool toBoolean(const Value& value, const char* op) {
 }
 
 Value neg(const Value& value) { return Value(-toNumber(value, "meno")); }
-
 Value logicNot(const Value& value) { return Value(!toBoolean(value, "ne")); }
-
-Value logicAnd(const Value& left, const Value& right) {
-    return Value(toBoolean(left, "e") && toBoolean(right, "e"));
-}
-
-Value logicOr(const Value& left, const Value& right) {
-    return Value(toBoolean(left, "o") || toBoolean(right, "o"));
-}
+Value logicAnd(const Value& l, const Value& r) { return Value(toBoolean(l, "e") && toBoolean(r, "e")); }
+Value logicOr (const Value& l, const Value& r) { return Value(toBoolean(l, "o") || toBoolean(r, "o")); }
 
 bool sameValue(const Value& left, const Value& right) {
     if (left.kind() != right.kind()) return false;
@@ -304,11 +393,10 @@ bool sameValue(const Value& left, const Value& right) {
     case Value::Kind::String:   return left.asString()  == right.asString();
     case Value::Kind::Function: return false;
     case Value::Kind::List: {
-        const Cons* l = left.asList().get();
-        const Cons* r = right.asList().get();
-        for (; l && r; l = l->tail.get(), r = r->tail.get())
-            if (!sameValue(l->head, r->head)) return false;
-        return !l && !r;
+        Value l = left, r = right;
+        for (; !l.listEmpty() && !r.listEmpty(); l = l.listTail(), r = r.listTail())
+            if (!sameValue(l.listHead(), r.listHead())) return false;
+        return l.listEmpty() && r.listEmpty();
     }
     case Value::Kind::Result:
         if (left.resultOk() != right.resultOk()) return false;
@@ -326,14 +414,12 @@ Value ge(const Value& l, const Value& r) { return Value(toNumber(l, "piu uguale"
 
 Value add(const Value& left, const Value& right) {
     if (left.kind() == Value::Kind::List && right.kind() == Value::Kind::List) {
-        // Collect left's nodes, then prepend them to right (sharing right's tail)
-        std::vector<const Cons*> leftNodes;
-        for (const Cons* c = left.asList().get(); c; c = c->tail.get())
-            leftNodes.push_back(c);
-        List cur = right.asList();
-        for (int i = static_cast<int>(leftNodes.size()) - 1; i >= 0; --i)
-            cur = std::make_shared<Cons>(Cons{leftNodes[i]->head, std::move(cur)});
-        return Value(std::move(cur));
+        std::vector<Value> elems;
+        for (Value c = left; !c.listEmpty(); c = c.listTail()) elems.push_back(c.listHead());
+        Value cur = right;
+        for (int i = static_cast<int>(elems.size()) - 1; i >= 0; --i)
+            cur = Value::makeCons(std::move(elems[i]), std::move(cur));
+        return cur;
     }
     if (left.kind() == Value::Kind::String || right.kind() == Value::Kind::String)
         return Value(toText(left) + toText(right));
@@ -344,9 +430,9 @@ Value sub(const Value& l, const Value& r) { return Value(toNumber(l, "-") - toNu
 Value mul(const Value& l, const Value& r) { return Value(toNumber(l, "*") * toNumber(r, "*")); }
 
 Value div(const Value& left, const Value& right) {
-    const auto divisor = toNumber(right, "/");
-    if (divisor == 0.0) throw std::runtime_error("divisione pe zero");
-    return Value(toNumber(left, "/") / divisor);
+    const auto d = toNumber(right, "/");
+    if (d == 0.0) throw std::runtime_error("divisione pe zero");
+    return Value(toNumber(left, "/") / d);
 }
 
 Value prim(const Value& v) {
@@ -354,24 +440,21 @@ Value prim(const Value& v) {
         throw std::runtime_error("prime: lista vuta o non-lista");
     return v.listHead();
 }
-
 Value uddhm(const Value& v) {
     if (v.kind() != Value::Kind::List || v.listEmpty())
         throw std::runtime_error("uldeme: lista vuta o non-lista");
     return v.listTail();
 }
-
 Value vot(const Value& v) {
     if (v.kind() != Value::Kind::List) throw std::runtime_error("vute: non-lista");
     return Value(v.listEmpty());
 }
-
 Value quante(const Value& v) {
     if (v.kind() == Value::Kind::String)
         return Value(static_cast<double>(v.asString().size()));
     if (v.kind() == Value::Kind::List) {
         double count = 0;
-        for (const Cons* c = v.asList().get(); c; c = c->tail.get()) ++count;
+        for (Value c = v; !c.listEmpty(); c = c.listTail()) ++count;
         return Value(count);
     }
     throw std::runtime_error("quante: vo' na stringa o na lista");
@@ -384,10 +467,8 @@ Value mod(const Value& left, const Value& right) {
 }
 
 Value spezzaIecch(const Value& str, const Value& sep) {
-    if (str.kind() != Value::Kind::String)
-        throw std::runtime_error("spezza iecch: vo' na stringa");
-    if (sep.kind() != Value::Kind::String)
-        throw std::runtime_error("spezza iecch: lu separatore dev'esse na stringa");
+    if (str.kind() != Value::Kind::String) throw std::runtime_error("spezza iecch: vo' na stringa");
+    if (sep.kind() != Value::Kind::String) throw std::runtime_error("spezza iecch: lu separatore dev'esse na stringa");
     std::vector<Value> result;
     const std::string& s = str.asString();
     const std::string& d = sep.asString();
@@ -439,12 +520,11 @@ Value toNumero(const Value& v) {
 Value cons(const Value& elem, const Value& lista) {
     if (lista.kind() != Value::Kind::List)
         throw std::runtime_error("mitta prime: il secondo argomento deve essere una lista");
-    return Value(std::make_shared<Cons>(Cons{elem, lista.asList()}));
+    return Value::makeCons(elem, lista);
 }
 
 std::ostream& operator<<(std::ostream& out, const Value& value) {
-    out << toText(value);
-    return out;
+    out << toText(value); return out;
 }
 
 } // namespace Scioh
