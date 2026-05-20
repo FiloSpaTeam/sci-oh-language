@@ -59,6 +59,7 @@ sci-oh is **purely functional**. These are firm architectural decisions, not to 
 - **No loops**: `mentre` is removed from the language. Use recursion.
 - **`se` is an expression**: `altrimenti` is always required. Returns the value of the selected branch.
 - **First-class functions**: a function name used without arguments evaluates to a `Scioh::Value` holding a callable.
+- **Currying / partial application**: every function has a fixed arity stored in its `FnBox`. Calling with fewer arguments than the arity returns a new partially-applied function; calling the partial with the remaining arguments completes the call. `mitte f mappa doppio` stores a `Lista → Lista` partial.
 - **Juxtaposition calls**: `f x y z` and `f(x, y, z)` are both valid. `f(x)` (no space before `(`) uses explicit call syntax; `f x` or `f (x)` (preceded by whitespace) uses juxtaposition. Arguments are collected only from the same source line as the callee.
 
 ## Call syntax
