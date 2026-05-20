@@ -126,6 +126,7 @@ void Codegen::emit(const Program& program, std::ostream& out) {
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -135,27 +136,26 @@ void Codegen::emit(const Program& program, std::ostream& out) {
 
 namespace Scioh {
 
-// Value uses std::variant so each instance occupies only the space of its
-// active type. Recursive heap types (List, Function, Result) are boxed via
-// shared_ptr so copies are O(1) and the variant size stays fixed.
+struct Cons;
+using List = std::shared_ptr<const Cons>;
+
+// Value is a tagged union over all sci-oh runtime types.
+// Lists use persistent cons-cells: cons/head/tail are all O(1) with structural sharing.
 struct Value {
-    // FnBox is forward-declared so shared_ptr<FnBox> compiles before FnBox
-    // is fully defined (shared_ptr only needs a pointer-sized slot here).
     struct FnBox;
 
     std::variant<
-        double,                                      // 0 Number
-        bool,                                        // 1 Boolean
-        std::string,                                 // 2 String
-        std::shared_ptr<FnBox>,                      // 3 Function
-        std::shared_ptr<std::vector<Value>>,         // 4 List
-        std::pair<bool, std::shared_ptr<Value>>      // 5 Result {ok, inner}
+        double,                                       // 0 Number
+        bool,                                         // 1 Boolean
+        std::string,                                  // 2 String
+        std::shared_ptr<FnBox>,                       // 3 Function
+        List,                                         // 4 List (persistent cons-cell)
+        std::pair<bool, std::shared_ptr<Value>>       // 5 Result {ok, inner}
     > data;
 
     enum class Kind { Number = 0, Boolean = 1, String = 2, Function = 3, List = 4, Result = 5 };
     Kind kind() const noexcept { return static_cast<Kind>(data.index()); }
 
-    // FnBox must be complete before any constructor that calls make_shared<FnBox>.
     struct FnBox { std::function<Value(std::vector<Value>)> fn; };
 
     Value() : data(false) {}
@@ -165,24 +165,25 @@ struct Value {
     Value(std::string s) : data(std::move(s)) {}
     Value(std::function<Value(std::vector<Value>)> fn)
         : data(std::make_shared<FnBox>(FnBox{std::move(fn)})) {}
-    Value(std::vector<Value> l)
-        : data(std::make_shared<std::vector<Value>>(std::move(l))) {}
+    explicit Value(List l) : data(std::move(l)) {}
 
-    double                   asNumber()  const { return std::get<double>(data); }
-    bool                     asBoolean() const { return std::get<bool>(data); }
-    const std::string&       asString()  const { return std::get<std::string>(data); }
+    double                   asNumber()   const { return std::get<double>(data); }
+    bool                     asBoolean()  const { return std::get<bool>(data); }
+    const std::string&       asString()   const { return std::get<std::string>(data); }
     const std::function<Value(std::vector<Value>)>& asFunction() const {
         return std::get<std::shared_ptr<FnBox>>(data)->fn;
     }
-    const std::vector<Value>& asList() const {
-        return *std::get<std::shared_ptr<std::vector<Value>>>(data);
-    }
-    bool resultOk() const {
-        return std::get<std::pair<bool, std::shared_ptr<Value>>>(data).first;
-    }
-    const Value& resultInner() const {
-        return *std::get<std::pair<bool, std::shared_ptr<Value>>>(data).second;
-    }
+    const List& asList() const { return std::get<List>(data); }
+
+    bool         listEmpty() const { return std::get<List>(data) == nullptr; }
+    const Value& listHead()  const;
+    Value        listTail()  const;
+
+    bool resultOk()            const { return std::get<std::pair<bool, std::shared_ptr<Value>>>(data).first; }
+    const Value& resultInner() const { return *std::get<std::pair<bool, std::shared_ptr<Value>>>(data).second; }
+
+    static Value emptyList() { return Value(List{nullptr}); }
+    static Value fromVector(std::vector<Value> v);
 
     static Value ok(Value inner) {
         Value v;
@@ -198,26 +199,35 @@ struct Value {
     }
 };
 
-struct ReturnValue {
-    Value value;
-};
+struct Cons { Value head; List tail; };
 
-struct TailCall {
-    Value fn;
-    std::vector<Value> args;
-};
+inline const Value& Value::listHead() const { return std::get<List>(data)->head; }
+inline Value        Value::listTail() const { return Value(std::get<List>(data)->tail); }
+inline Value        Value::fromVector(std::vector<Value> v) {
+    List cur = nullptr;
+    for (int i = static_cast<int>(v.size()) - 1; i >= 0; --i)
+        cur = std::make_shared<Cons>(Cons{std::move(v[i]), std::move(cur)});
+    return Value(std::move(cur));
+}
+
+struct ReturnValue { Value value; };
+
+// TailCall is delivered via thread_local instead of exceptions: setting
+// g_tailCall + returning a placeholder avoids stack-unwinding overhead on
+// every recursive iteration.
+struct TailCall { Value fn; std::vector<Value> args; };
+thread_local std::optional<TailCall> g_tailCall;
 
 Value apply(Value fn, std::vector<Value> args) {
     while (true) {
-        if (fn.kind() != Value::Kind::Function) {
+        if (fn.kind() != Value::Kind::Function)
             throw std::runtime_error("ne ie na funzione");
-        }
-        try {
-            return fn.asFunction()(std::move(args));
-        } catch (TailCall& tc) {
-            fn   = std::move(tc.fn);
-            args = std::move(tc.args);
-        }
+        Value result = fn.asFunction()(std::move(args));
+        if (!g_tailCall) return result;
+        auto tc = std::move(*g_tailCall);
+        g_tailCall.reset();
+        fn   = std::move(tc.fn);
+        args = std::move(tc.args);
     }
 }
 
@@ -225,9 +235,8 @@ std::string toText(const Value& value) {
     switch (value.kind()) {
     case Value::Kind::Number: {
         const double n = value.asNumber();
-        if (n == std::floor(n) && std::abs(n) < 1e15) {
+        if (n == std::floor(n) && std::abs(n) < 1e15)
             return std::to_string(static_cast<long long>(n));
-        }
         std::ostringstream out;
         out << n;
         return out.str();
@@ -240,10 +249,11 @@ std::string toText(const Value& value) {
         return "<funzione>";
     case Value::Kind::List: {
         std::string out = "[";
-        const auto& l = value.asList();
-        for (std::size_t i = 0; i < l.size(); ++i) {
-            if (i > 0) out += ", ";
-            out += toText(l[i]);
+        bool first = true;
+        for (const Cons* c = value.asList().get(); c; c = c->tail.get()) {
+            if (!first) out += ", ";
+            out += toText(c->head);
+            first = false;
         }
         out += "]";
         return out;
@@ -251,7 +261,7 @@ std::string toText(const Value& value) {
     case Value::Kind::Result:
         return value.resultOk()
             ? "vabbone(" + toText(value.resultInner()) + ")"
-            : "guaje(" + toText(value.resultInner()) + ")";
+            : "guaje("   + toText(value.resultInner()) + ")";
     }
     return "";
 }
@@ -294,12 +304,11 @@ bool sameValue(const Value& left, const Value& right) {
     case Value::Kind::String:   return left.asString()  == right.asString();
     case Value::Kind::Function: return false;
     case Value::Kind::List: {
-        const auto& l = left.asList();
-        const auto& r = right.asList();
-        if (l.size() != r.size()) return false;
-        for (std::size_t i = 0; i < l.size(); ++i)
-            if (!sameValue(l[i], r[i])) return false;
-        return true;
+        const Cons* l = left.asList().get();
+        const Cons* r = right.asList().get();
+        for (; l && r; l = l->tail.get(), r = r->tail.get())
+            if (!sameValue(l->head, r->head)) return false;
+        return !l && !r;
     }
     case Value::Kind::Result:
         if (left.resultOk() != right.resultOk()) return false;
@@ -310,17 +319,21 @@ bool sameValue(const Value& left, const Value& right) {
 
 Value eq(const Value& l, const Value& r) { return Value( sameValue(l, r)); }
 Value ne(const Value& l, const Value& r) { return Value(!sameValue(l, r)); }
-Value lt(const Value& l, const Value& r) { return Value(toNumber(l, "meno de")    <  toNumber(r, "meno de")); }
+Value lt(const Value& l, const Value& r) { return Value(toNumber(l, "meno de")     <  toNumber(r, "meno de")); }
 Value le(const Value& l, const Value& r) { return Value(toNumber(l, "meno uguale") <= toNumber(r, "meno uguale")); }
-Value gt(const Value& l, const Value& r) { return Value(toNumber(l, "piu de")     >  toNumber(r, "piu de")); }
-Value ge(const Value& l, const Value& r) { return Value(toNumber(l, "piu uguale") >= toNumber(r, "piu uguale")); }
+Value gt(const Value& l, const Value& r) { return Value(toNumber(l, "piu de")      >  toNumber(r, "piu de")); }
+Value ge(const Value& l, const Value& r) { return Value(toNumber(l, "piu uguale")  >= toNumber(r, "piu uguale")); }
 
 Value add(const Value& left, const Value& right) {
     if (left.kind() == Value::Kind::List && right.kind() == Value::Kind::List) {
-        std::vector<Value> result = left.asList();
-        const auto& r = right.asList();
-        result.insert(result.end(), r.begin(), r.end());
-        return Value(std::move(result));
+        // Collect left's nodes, then prepend them to right (sharing right's tail)
+        std::vector<const Cons*> leftNodes;
+        for (const Cons* c = left.asList().get(); c; c = c->tail.get())
+            leftNodes.push_back(c);
+        List cur = right.asList();
+        for (int i = static_cast<int>(leftNodes.size()) - 1; i >= 0; --i)
+            cur = std::make_shared<Cons>(Cons{leftNodes[i]->head, std::move(cur)});
+        return Value(std::move(cur));
     }
     if (left.kind() == Value::Kind::String || right.kind() == Value::Kind::String)
         return Value(toText(left) + toText(right));
@@ -337,28 +350,30 @@ Value div(const Value& left, const Value& right) {
 }
 
 Value prim(const Value& v) {
-    if (v.kind() != Value::Kind::List || v.asList().empty())
+    if (v.kind() != Value::Kind::List || v.listEmpty())
         throw std::runtime_error("prime: lista vuta o non-lista");
-    return v.asList()[0];
+    return v.listHead();
 }
 
 Value uddhm(const Value& v) {
-    if (v.kind() != Value::Kind::List || v.asList().empty())
+    if (v.kind() != Value::Kind::List || v.listEmpty())
         throw std::runtime_error("uldeme: lista vuta o non-lista");
-    const auto& l = v.asList();
-    return Value(std::vector<Value>(l.begin() + 1, l.end()));
+    return v.listTail();
 }
 
 Value vot(const Value& v) {
     if (v.kind() != Value::Kind::List) throw std::runtime_error("vute: non-lista");
-    return Value(v.asList().empty());
+    return Value(v.listEmpty());
 }
 
 Value quante(const Value& v) {
     if (v.kind() == Value::Kind::String)
         return Value(static_cast<double>(v.asString().size()));
-    if (v.kind() == Value::Kind::List)
-        return Value(static_cast<double>(v.asList().size()));
+    if (v.kind() == Value::Kind::List) {
+        double count = 0;
+        for (const Cons* c = v.asList().get(); c; c = c->tail.get()) ++count;
+        return Value(count);
+    }
     throw std::runtime_error("quante: vo' na stringa o na lista");
 }
 
@@ -378,7 +393,7 @@ Value spezzaIecch(const Value& str, const Value& sep) {
     const std::string& d = sep.asString();
     if (d.empty()) {
         for (char c : s) result.push_back(Value(std::string(1, c)));
-        return Value(std::move(result));
+        return Value::fromVector(std::move(result));
     }
     std::size_t pos = 0, found;
     while ((found = s.find(d, pos)) != std::string::npos) {
@@ -386,7 +401,7 @@ Value spezzaIecch(const Value& str, const Value& sep) {
         pos = found + d.size();
     }
     result.push_back(Value(s.substr(pos)));
-    return Value(std::move(result));
+    return Value::fromVector(std::move(result));
 }
 
 Value arrecala(const Value& v) { return Value(std::floor(toNumber(v, "cala"))); }
@@ -424,11 +439,7 @@ Value toNumero(const Value& v) {
 Value cons(const Value& elem, const Value& lista) {
     if (lista.kind() != Value::Kind::List)
         throw std::runtime_error("mitta prime: il secondo argomento deve essere una lista");
-    std::vector<Value> result;
-    result.push_back(elem);
-    const auto& l = lista.asList();
-    result.insert(result.end(), l.begin(), l.end());
-    return Value(std::move(result));
+    return Value(std::make_shared<Cons>(Cons{elem, lista.asList()}));
 }
 
 std::ostream& operator<<(std::ostream& out, const Value& value) {
@@ -554,15 +565,14 @@ void Codegen::emitMatchBranches(
             out << "if (_subj.kind() == Scioh::Value::Kind::Boolean && _subj.asBoolean() == " << (branch.boolLiteral ? "true" : "false") << ") {\n";
             break;
         case PatternKind::EmptyList:
-            out << "if (_subj.kind() == Scioh::Value::Kind::List && _subj.asList().empty()) {\n";
+            out << "if (_subj.kind() == Scioh::Value::Kind::List && _subj.listEmpty()) {\n";
             break;
         case PatternKind::Cons: {
-            out << "if (_subj.kind() == Scioh::Value::Kind::List && !_subj.asList().empty()) {\n";
+            out << "if (_subj.kind() == Scioh::Value::Kind::List && !_subj.listEmpty()) {\n";
             auto headCpp = declareSymbol(branch.headName, matchExpr.location);
             auto tailCpp = declareSymbol(branch.tailName, matchExpr.location);
-            out << indent(bodyIndent) << "auto " << headCpp << " = _subj.asList()[0];\n";
-            out << indent(bodyIndent) << "auto " << tailCpp
-                << " = Scioh::Value(std::vector<Scioh::Value>(_subj.asList().begin() + 1, _subj.asList().end()));\n";
+            out << indent(bodyIndent) << "auto " << headCpp << " = _subj.listHead();\n";
+            out << indent(bodyIndent) << "auto " << tailCpp << " = _subj.listTail();\n";
             break;
         }
         case PatternKind::ResultOk: {
@@ -724,7 +734,7 @@ std::string Codegen::emitExpr(const Expr& expr) {
     }
     case ExprKind::List: {
         const auto& listExpr = static_cast<const ListExpr&>(expr);
-        std::string result = "Scioh::Value(std::vector<Scioh::Value>{";
+        std::string result = "Scioh::Value::fromVector({";
         for (std::size_t i = 0; i < listExpr.elements.size(); ++i) {
             if (i > 0) result += ", ";
             result += emitExpr(*listExpr.elements[i]);
@@ -812,12 +822,13 @@ void Codegen::emitTailReturn(const Expr& expr, std::ostream& out, int indentLeve
     switch (expr.kind) {
     case ExprKind::Call: {
         const auto& call = static_cast<const CallExpr&>(expr);
-        out << indent(indentLevel) << "throw Scioh::TailCall{" << emitExpr(*call.callee) << ", std::vector<Scioh::Value>{";
+        out << indent(indentLevel) << "Scioh::g_tailCall.emplace(Scioh::TailCall{" << emitExpr(*call.callee) << ", std::vector<Scioh::Value>{";
         for (std::size_t i = 0; i < call.args.size(); ++i) {
             if (i > 0) out << ", ";
             out << emitExpr(*call.args[i]);
         }
-        out << "}};\n";
+        out << "}});\n";
+        out << indent(indentLevel) << "return Scioh::Value(false);\n";
         break;
     }
     case ExprKind::If: {
