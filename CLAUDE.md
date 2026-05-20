@@ -109,8 +109,41 @@ All keywords are mapped in `Lexer.cpp` → `keywordKind()`.
 | `mbe` | `Lambda` | Anonymous function (lambda) |
 | `po` | `Po` | Separator between `se` condition and then-branch |
 | `dove` | `Dove` | Local binding at end of `quinde` (where-clause style) |
+| `passanne` | `PipeRight` | Pipe operator: `a passanne f b` = `f(b, a)` (same as `\|>`) |
 
-Symbols `+`, `-`, `*`, `/`, `=`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `;`, `(`, `)`, `,` also work.
+Symbols `+`, `-`, `*`, `/`, `=`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `;`, `(`, `)`, `,`, `|>` also work.
+
+## Built-in prelude functions
+
+These are available without declaration in every program:
+
+| Function | Signature | Description |
+|---|---|---|
+| `mappa` | `mappa f lista` | Map `f` over every element of `lista` |
+| `filtre` | `filtre f lista` | Keep elements of `lista` for which `f` returns `sci` |
+| `pieghe` | `pieghe acc f lista` | Fold-left: `f(f(f(acc, x1), x2), x3)` |
+| `inversa` | `inversa lista` | Reverse a list in O(n) |
+| `pijje` | `pijje n lista` | First `n` elements of `lista` |
+| `lasse` | `lasse n lista` | Drop first `n` elements of `lista` |
+| `uni` | `uni sep lista` | Join list elements into a string with separator |
+| `assol` | `assol n` | Absolute value |
+| `massime` | `massime a b` | Maximum of two numbers |
+| `mineme` | `mineme a b` | Minimum of two numbers |
+| `putenze` | `putenze base exp` | Raise `base` to the power `exp` |
+
+## Pipe operator
+
+`a |> f` is equivalent to `f(a)`. When the right side has extra arguments,
+the left side is appended as the **last** argument:
+
+```sci
+lista |> mappa doppio        # = mappa(doppio, lista)
+lista |> filtre pari         # = filtre(pari, lista)
+lista |> pieghe 0 somma      # = pieghe(0, somma, lista)
+lista |> filtre pari |> mappa doppio |> pieghe 0 somma  # chained
+```
+
+`passanne` is an equivalent dialect keyword for `|>`.
 
 ## Syntax examples
 

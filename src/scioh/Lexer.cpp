@@ -158,6 +158,9 @@ TokenKind keywordKind(std::string_view text) {
     if (text == "dove") {
         return TokenKind::Dove;
     }
+    if (text == "passanne") {
+        return TokenKind::PipeRight;
+    }
     return TokenKind::Identifier;
 }
 
@@ -285,6 +288,8 @@ const char* tokenKindName(TokenKind kind) {
         return "prove";
     case TokenKind::Dove:
         return "dove";
+    case TokenKind::PipeRight:
+        return "|>";
     }
     return "token sconosciuto";
 }
@@ -349,6 +354,8 @@ Token Lexer::nextTokenInner() {
     case ']':
         return makeToken(TokenKind::RightBracket, "]", start);
     case '|':
+        if (match('>'))
+            return makeToken(TokenKind::PipeRight, "|>", start);
         return makeToken(TokenKind::Pipe, "|", start);
     case '%':
         return makeToken(TokenKind::Percent, "%", start);

@@ -161,7 +161,27 @@ void Parser::finishStatement(const char* message) {
 }
 
 std::unique_ptr<Expr> Parser::expression() {
-    return consExpression();
+    return pipeExpression();
+}
+
+// a |> f b c  →  f(b, c, a)   (lhs inserted as last argument)
+// a |> f      →  f(a)
+// Left-associative: a |> f |> g  →  g(f(a))
+std::unique_ptr<Expr> Parser::pipeExpression() {
+    auto left = consExpression();
+    while (check(TokenKind::PipeRight)) {
+        const auto pipeLoc = advance().location;
+        auto rhs = consExpression();
+        if (rhs->kind == ExprKind::Call) {
+            static_cast<CallExpr&>(*rhs).args.push_back(std::move(left));
+            left = std::move(rhs);
+        } else {
+            std::vector<std::unique_ptr<Expr>> args;
+            args.push_back(std::move(left));
+            left = std::make_unique<CallExpr>(std::move(rhs), std::move(args), pipeLoc);
+        }
+    }
+    return left;
 }
 
 std::unique_ptr<Expr> Parser::consExpression() {

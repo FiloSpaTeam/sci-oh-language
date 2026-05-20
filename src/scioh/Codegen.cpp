@@ -540,11 +540,132 @@ std::ostream& operator<<(std::ostream& out, const Value& value) {
     out << toText(value); return out;
 }
 
+Value mappa_impl(const Value& fn, const Value& list) {
+    std::vector<Value> result;
+    for (Value c = list; !c.listEmpty(); c = c.listTail())
+        result.push_back(apply(fn, {c.listHead()}));
+    return Value::fromVector(std::move(result));
+}
+
+Value filtre_impl(const Value& fn, const Value& list) {
+    std::vector<Value> result;
+    for (Value c = list; !c.listEmpty(); c = c.listTail()) {
+        if (isTruthy(apply(fn, {c.listHead()})))
+            result.push_back(c.listHead());
+    }
+    return Value::fromVector(std::move(result));
+}
+
+Value pieghe_impl(const Value& acc, const Value& fn, const Value& list) {
+    Value cur = acc;
+    for (Value c = list; !c.listEmpty(); c = c.listTail())
+        cur = apply(fn, {cur, c.listHead()});
+    return cur;
+}
+
+Value inversa_impl(const Value& list) {
+    Value cur = Value::emptyList();
+    for (Value c = list; !c.listEmpty(); c = c.listTail())
+        cur = Value::makeCons(c.listHead(), std::move(cur));
+    return cur;
+}
+
+Value pijje_impl(const Value& n, const Value& list) {
+    const long long count = static_cast<long long>(toNumber(n, "pijje"));
+    std::vector<Value> result;
+    long long i = 0;
+    for (Value c = list; !c.listEmpty() && i < count; c = c.listTail(), ++i)
+        result.push_back(c.listHead());
+    return Value::fromVector(std::move(result));
+}
+
+Value lasse_impl(const Value& n, const Value& list) {
+    const long long count = static_cast<long long>(toNumber(n, "lasse"));
+    long long i = 0;
+    Value cur = list;
+    for (; !cur.listEmpty() && i < count; cur = cur.listTail(), ++i) {}
+    return cur;
+}
+
+Value uni_impl(const Value& sep, const Value& list) {
+    if (sep.kind() != Value::Kind::String) throw std::runtime_error("uni: lu separatore dev'esse na stringa");
+    std::string result;
+    bool first = true;
+    for (Value c = list; !c.listEmpty(); c = c.listTail()) {
+        if (!first) result += sep.asString();
+        result += toText(c.listHead());
+        first = false;
+    }
+    return Value(std::move(result));
+}
+
+Value assol_impl(const Value& v) { return Value(std::abs(toNumber(v, "assol"))); }
+Value massime_impl(const Value& a, const Value& b) {
+    return toNumber(a, "massime") >= toNumber(b, "massime") ? a : b;
+}
+Value mineme_impl(const Value& a, const Value& b) {
+    return toNumber(a, "mineme") <= toNumber(b, "mineme") ? a : b;
+}
+Value putenze_impl(const Value& base, const Value& exp) {
+    return Value(std::pow(toNumber(base, "putenze"), toNumber(exp, "putenze")));
+}
+
 } // namespace Scioh
+
+const Scioh::Value mappa = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::mappa_impl(args.at(0), args.at(1));
+    }));
+const Scioh::Value filtre =Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::filtre_impl(args.at(0), args.at(1));
+    }));
+const Scioh::Value pieghe =Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::pieghe_impl(args.at(0), args.at(1), args.at(2));
+    }));
+const Scioh::Value inversa = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::inversa_impl(args.at(0));
+    }));
+const Scioh::Value pijje = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::pijje_impl(args.at(0), args.at(1));
+    }));
+const Scioh::Value lasse = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::lasse_impl(args.at(0), args.at(1));
+    }));
+const Scioh::Value uni = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::uni_impl(args.at(0), args.at(1));
+    }));
+const Scioh::Value assol = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::assol_impl(args.at(0));
+    }));
+const Scioh::Value massime = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::massime_impl(args.at(0), args.at(1));
+    }));
+const Scioh::Value mineme = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::mineme_impl(args.at(0), args.at(1));
+    }));
+const Scioh::Value putenze = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    [](std::vector<Scioh::Value> args) -> Scioh::Value {
+        return Scioh::putenze_impl(args.at(0), args.at(1));
+    }));
 
 )SCIOH";
 
-    // Collect all function names for forward declarations and symbol registry
+    // Pre-register built-in prelude functions (available in every program)
+    for (const char* name : {"mappa", "filtre", "pieghe",
+                             "inversa", "pijje", "lasse", "uni",
+                             "assol", "massime", "mineme", "putenze"})
+        functionSymbols_[name] = name;
+
+    // Collect all user function names for forward declarations and symbol registry
     for (const auto& stmt : program.statements) {
         if (stmt->kind != StmtKind::Function) {
             continue;
