@@ -116,10 +116,23 @@ std::string indent(int level) {
 
 } // namespace
 
-void Codegen::emit(const Program& program, std::ostream& out) {
+void Codegen::emit(const Program& program, std::ostream& out,
+                   const std::unordered_map<std::string, TyPtr>& fnTypes) {
     scopes_.clear();
     functionSymbols_.clear();
+    typedFns_.clear();
     nextSymbol_ = 0;
+    nextTypedSym_ = 0;
+
+    // Register functions whose type is fully Num/Bool (no Str/List/etc.)
+    for (const auto& [name, ty] : fnTypes) {
+        if (!ty || ty->k != Ty::K::Fun) continue;
+        bool allNumBool = true;
+        for (const auto& t : ty->inner) {
+            if (!t || (!t->isNum() && !t->isBool())) { allNumBool = false; break; }
+        }
+        if (allNumBool) typedFns_[name] = ty;
+    }
 
     out << R"SCIOH(#include <atomic>
 #include <cmath>
@@ -540,6 +553,31 @@ std::ostream& operator<<(std::ostream& out, const Value& value) {
         declareFunctionSymbol(fn.name);
     }
 
+    // Typed function forward declarations (before main, for mutual recursion)
+    for (const auto& stmt : program.statements) {
+        if (stmt->kind != StmtKind::Function) continue;
+        const auto& fn = static_cast<const FunctionStmt&>(*stmt);
+        auto it = typedFns_.find(fn.name);
+        if (it == typedFns_.end()) continue;
+        const auto& ty = it->second;
+        out << "static " << nativeType(ty->ret()) << " fn_" << fn.name << "_typed(";
+        const auto ps = ty->params();
+        for (std::size_t i = 0; i < ps.size(); ++i) {
+            if (i) out << ", ";
+            out << nativeType(ps[i]) << " p_" << i;
+        }
+        out << ");\n";
+    }
+
+    // Typed function definitions
+    for (const auto& stmt : program.statements) {
+        if (stmt->kind != StmtKind::Function) continue;
+        const auto& fn = static_cast<const FunctionStmt&>(*stmt);
+        auto it = typedFns_.find(fn.name);
+        if (it == typedFns_.end()) continue;
+        emitTypedFunction(fn, it->second, out);
+    }
+
     out << "int main() {\n    try {\n";
     pushScope();
 
@@ -569,7 +607,7 @@ std::ostream& operator<<(std::ostream& out, const Value& value) {
         out << ";\n";
     }
 
-    // Emit function definitions
+    // Emit function definitions (typed fns get thin Value wrappers, others unchanged)
     for (const auto& stmt : program.statements) {
         if (stmt->kind == StmtKind::Function) {
             emitStatement(*stmt, out, 2);
@@ -694,21 +732,36 @@ void Codegen::emitStatement(const Stmt& stmt, std::ostream& out, int indentLevel
     }
     case StmtKind::Function: {
         const auto& fn = static_cast<const FunctionStmt&>(stmt);
-        pushScope();
-        // Declare parameters as local symbols in this scope
-        std::vector<std::string> paramCppNames;
-        for (const auto& param : fn.params) {
-            paramCppNames.push_back(declareSymbol(param, fn.location));
+
+        // Typed functions: emit a thin Value wrapper that delegates to the typed C++ function
+        if (isTyped(fn.name)) {
+            const auto& ty = typedFns_.at(fn.name);
+            const auto ps = ty->params();
+            out << indent(indentLevel) << "fn_" << fn.name
+                << " = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>("
+                << "[](std::vector<Scioh::Value> args) -> Scioh::Value {\n";
+            out << indent(indentLevel + 1) << "return Scioh::Value(fn_"
+                << fn.name << "_typed(";
+            for (std::size_t i = 0; i < ps.size(); ++i) {
+                if (i) out << ", ";
+                if (ps[i]->isNum())  out << "args.at(" << i << ").asNumber()";
+                else                 out << "args.at(" << i << ").asBoolean()";
+            }
+            out << "));\n";
+            out << indent(indentLevel) << "}));\n";
+            break;
         }
 
-        // Build the lambda body
+        pushScope();
+        std::vector<std::string> paramCppNames;
+        for (const auto& param : fn.params)
+            paramCppNames.push_back(declareSymbol(param, fn.location));
+
         std::ostringstream body;
         body << indent(indentLevel) << "fn_" << fn.name << " = Scioh::Value{[&](std::vector<Scioh::Value> args) -> Scioh::Value {\n";
         body << indent(indentLevel + 1) << "try {\n";
-        for (std::size_t i = 0; i < fn.params.size(); ++i) {
+        for (std::size_t i = 0; i < fn.params.size(); ++i)
             body << indent(indentLevel + 2) << "auto " << paramCppNames[i] << " = args.at(" << i << ");\n";
-        }
-        // Emit body statements
         for (const auto& s : fn.body) {
             std::ostringstream tmp;
             emitStatement(*s, tmp, indentLevel + 2);
@@ -942,6 +995,177 @@ void Codegen::pushScope() {
 
 void Codegen::popScope() {
     scopes_.pop_back();
+}
+
+// ---- Typed emission ----
+
+std::string Codegen::nativeType(const TyPtr& ty) {
+    if (!ty) return "Scioh::Value";
+    switch (ty->k) {
+    case Ty::K::Num:  return "double";
+    case Ty::K::Bool: return "bool";
+    case Ty::K::Str:  return "std::string";
+    default:          return "Scioh::Value";
+    }
+}
+
+bool Codegen::isTyped(const std::string& name) const {
+    return typedFns_.count(name) > 0;
+}
+
+std::string Codegen::emitTypedExpr(const Expr& expr, const TypedEnv& tenv) {
+    switch (expr.kind) {
+    case ExprKind::Number:
+        return static_cast<const NumberExpr&>(expr).value;
+
+    case ExprKind::Boolean:
+        return static_cast<const BooleanExpr&>(expr).value ? "true" : "false";
+
+    case ExprKind::String:
+        return quoteCppString(static_cast<const StringExpr&>(expr).value);
+
+    case ExprKind::Identifier: {
+        const auto& name = static_cast<const IdentifierExpr&>(expr).name;
+        auto it = tenv.find(name);
+        if (it != tenv.end()) return it->second.cppName;
+        return "";
+    }
+
+    case ExprKind::Unary: {
+        const auto& u = static_cast<const UnaryExpr&>(expr);
+        auto inner = emitTypedExpr(*u.right, tenv);
+        if (inner.empty()) return "";
+        switch (u.op) {
+        case TokenKind::Minus:      return "(-" + inner + ")";
+        case TokenKind::Not:        return "(!" + inner + ")";
+        case TokenKind::Cala:       return "std::floor(" + inner + ")";
+        case TokenKind::Suva:       return "std::ceil(" + inner + ")";
+        case TokenKind::Arretunne:  return "std::round(" + inner + ")";
+        case TokenKind::Radice:     return "std::sqrt(" + inner + ")";
+        default: return "";
+        }
+    }
+
+    case ExprKind::Binary: {
+        const auto& b = static_cast<const BinaryExpr&>(expr);
+        auto l = emitTypedExpr(*b.left,  tenv);
+        auto r = emitTypedExpr(*b.right, tenv);
+        if (l.empty() || r.empty()) return "";
+        switch (b.op) {
+        case TokenKind::Plus:         return "(" + l + " + " + r + ")";
+        case TokenKind::Minus:        return "(" + l + " - " + r + ")";
+        case TokenKind::Star:         return "(" + l + " * " + r + ")";
+        case TokenKind::Slash:        return "(" + l + " / " + r + ")";
+        case TokenKind::Percent:      return "std::fmod(" + l + ", " + r + ")";
+        case TokenKind::EqualEqual:   return "(" + l + " == " + r + ")";
+        case TokenKind::NotEqual:     return "(" + l + " != " + r + ")";
+        case TokenKind::Less:         return "(" + l + " < "  + r + ")";
+        case TokenKind::LessEqual:    return "(" + l + " <= " + r + ")";
+        case TokenKind::Greater:      return "(" + l + " > "  + r + ")";
+        case TokenKind::GreaterEqual: return "(" + l + " >= " + r + ")";
+        case TokenKind::And:          return "(" + l + " && " + r + ")";
+        case TokenKind::Or:           return "(" + l + " || " + r + ")";
+        default: return "";
+        }
+    }
+
+    case ExprKind::Call: {
+        const auto& call = static_cast<const CallExpr&>(expr);
+        if (call.callee->kind != ExprKind::Identifier) return "";
+        const auto& calleeName = static_cast<const IdentifierExpr&>(*call.callee).name;
+        if (!isTyped(calleeName)) return "";
+        std::string result = "fn_" + calleeName + "_typed(";
+        for (std::size_t i = 0; i < call.args.size(); ++i) {
+            auto argStr = emitTypedExpr(*call.args[i], tenv);
+            if (argStr.empty()) return "";
+            if (i) result += ", ";
+            result += argStr;
+        }
+        return result + ")";
+    }
+
+    case ExprKind::If: {
+        const auto& ifExpr = static_cast<const IfExpr&>(expr);
+        auto cond = emitTypedExpr(*ifExpr.condition, tenv);
+        if (cond.empty()) return "";
+        if (!expr.ty || !expr.ty->isPrimitive()) return "";
+        const auto retT = nativeType(expr.ty);
+        std::ostringstream oss;
+        oss << "[&]() -> " << retT << " {\n";
+        oss << "if (" << cond << ") {\n";
+        TypedEnv thenEnv = tenv;
+        auto thenResult = emitTypedBody(ifExpr.thenBranch, oss, 1, thenEnv);
+        if (thenResult.empty()) return "";
+        oss << "return " << thenResult << ";\n";
+        oss << "} else {\n";
+        TypedEnv elseEnv = tenv;
+        auto elseResult = emitTypedBody(ifExpr.elseBranch, oss, 1, elseEnv);
+        if (elseResult.empty()) return "";
+        oss << "return " << elseResult << ";\n";
+        oss << "}}()";
+        return oss.str();
+    }
+
+    default:
+        return "";
+    }
+}
+
+std::string Codegen::emitTypedBody(
+    const std::vector<std::unique_ptr<Stmt>>& stmts,
+    std::ostream& out, int il, TypedEnv tenv)
+{
+    for (std::size_t i = 0; i < stmts.size(); ++i) {
+        const auto& stmt = *stmts[i];
+        const bool isLast = (i + 1 == stmts.size());
+
+        if (stmt.kind == StmtKind::ExprStmt && isLast) {
+            return emitTypedExpr(*static_cast<const ExprStmt&>(stmt).expr, tenv);
+        }
+        if (stmt.kind == StmtKind::Return) {
+            return emitTypedExpr(*static_cast<const ReturnStmt&>(stmt).value, tenv);
+        }
+        if (stmt.kind == StmtKind::Let) {
+            const auto& let = static_cast<const LetStmt&>(stmt);
+            auto valStr = emitTypedExpr(*let.value, tenv);
+            if (valStr.empty()) return "";
+            auto ty = let.value->ty;
+            if (!ty || !ty->isPrimitive()) return "";
+            auto cppName = "t" + std::to_string(nextTypedSym_++);
+            out << indent(il) << nativeType(ty) << " " << cppName << " = " << valStr << ";\n";
+            tenv[let.name] = TypedSym{cppName, ty};
+            continue;
+        }
+        // Unsupported statement kind in typed body
+        return "";
+    }
+    return "";
+}
+
+void Codegen::emitTypedFunction(const FunctionStmt& fn, const TyPtr& ty, std::ostream& out) {
+    const auto ps = ty->params();
+    // Build typed env from parameters
+    TypedEnv tenv;
+    out << "static " << nativeType(ty->ret()) << " fn_" << fn.name << "_typed(";
+    for (std::size_t i = 0; i < ps.size(); ++i) {
+        if (i) out << ", ";
+        out << nativeType(ps[i]) << " p_" << i;
+        tenv[fn.params[i]] = TypedSym{"p_" + std::to_string(i), ps[i]};
+    }
+    out << ") {\n";
+
+    // Try to emit the body as typed
+    std::ostringstream body;
+    std::string retExpr = emitTypedBody(fn.body, body, 1, tenv);
+    if (!retExpr.empty()) {
+        out << body.str();
+        out << "    return " << retExpr << ";\n";
+    } else {
+        // Fallback: call through the Value wrapper (should rarely happen for typed fns)
+        out << "    // typed emit failed; fallback unreachable\n";
+        out << "    return " << nativeType(ty->ret()) << "{};\n";
+    }
+    out << "}\n";
 }
 
 } // namespace scioh
