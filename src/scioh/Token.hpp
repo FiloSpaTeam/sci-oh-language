@@ -67,6 +67,7 @@ enum class TokenKind {
     Guaje,
     Prove,
     Dove,
+    PipeRight,
 };
 
 struct Token {

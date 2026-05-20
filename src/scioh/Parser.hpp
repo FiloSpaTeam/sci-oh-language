@@ -24,6 +24,7 @@ private:
     void finishStatement(const char* message);
 
     std::unique_ptr<Expr> expression();
+    std::unique_ptr<Expr> pipeExpression();
     std::unique_ptr<Expr> consExpression();
     std::unique_ptr<Expr> lambdaExpression();
     std::unique_ptr<Expr> matchExpression();
