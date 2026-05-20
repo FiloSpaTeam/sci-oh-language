@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: sci-oh-linux-x64
+          - os: macos-latest
+            artifact: sci-oh-macos-arm64
+          - os: windows-latest
+            artifact: sci-oh-windows-x64.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          c++ -std=c++20 -O2 \
+            -DSCIOH_VERSION="\"$VERSION\"" \
+            -I src \
+            -o "${{ matrix.artifact }}" \
+            src/main.cpp \
+            src/scioh/Lexer.cpp \
+            src/scioh/Parser.cpp \
+            src/scioh/Codegen.cpp
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          g++ -std=c++20 -O2 \
+            -DSCIOH_VERSION="\"$VERSION\"" \
+            -I src \
+            -o "${{ matrix.artifact }}" \
+            src/main.cpp \
+            src/scioh/Lexer.cpp \
+            src/scioh/Parser.cpp \
+            src/scioh/Codegen.cpp
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          name: "sci-oh ${{ github.ref_name }}"
