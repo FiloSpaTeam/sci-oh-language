@@ -204,7 +204,7 @@ public:
     Value(bool b)          noexcept : bits_(b ? kTagTrue : kTagFalse) {}
     Value(const char* s)            : Value(std::string(s)) {}
     Value(std::string s);
-    Value(std::function<Value(std::vector<Value>)> fn);
+    Value(std::function<Value(std::vector<Value>)> fn, int arity = 0);
     Value(const Value& o)  noexcept : bits_(o.bits_) { if (auto* p = heapPtr()) addRef(p); }
     Value(Value&& o)       noexcept : bits_(o.bits_) { o.bits_ = kTagFalse; }
     ~Value()               noexcept { if (auto* p = heapPtr()) release(p); }
@@ -239,6 +239,8 @@ public:
     bool               asBoolean() const noexcept { return bits_ == kTagTrue; }
     const std::string& asString()  const noexcept;
     const std::function<Value(std::vector<Value>)>& asFunction() const noexcept;
+    FnBox* fnBox() const noexcept;
+    static Value fromFnBox(FnBox* p) noexcept;
 
     bool         listEmpty() const noexcept { return (bits_ & kTagMask16) == kTagNil; }
     const Value& listHead()  const noexcept;
@@ -271,6 +273,8 @@ struct StringBox : RefCounted {
     explicit StringBox(std::string v) : s(std::move(v)) {}
 };
 struct FnBox : RefCounted {
+    int arity = 0;
+    std::vector<Value> partial;
     std::function<Value(std::vector<Value>)> fn;
 };
 struct Cons : RefCounted {
@@ -286,9 +290,15 @@ inline Value::Value(std::string s) {
     auto* p = new StringBox(std::move(s));
     bits_ = kTagStr | reinterpret_cast<uint64_t>(p);
 }
-inline Value::Value(std::function<Value(std::vector<Value>)> fn) {
-    auto* p = new FnBox; p->fn = std::move(fn);
+inline Value::Value(std::function<Value(std::vector<Value>)> fn, int arity) {
+    auto* p = new FnBox; p->fn = std::move(fn); p->arity = arity;
     bits_ = kTagFn | reinterpret_cast<uint64_t>(p);
+}
+inline FnBox* Value::fnBox() const noexcept {
+    return reinterpret_cast<FnBox*>(bits_ & kPtrMask);
+}
+inline Value Value::fromFnBox(FnBox* p) noexcept {
+    return fromBits(kTagFn | reinterpret_cast<uint64_t>(p));
 }
 inline const std::string& Value::asString() const noexcept {
     return reinterpret_cast<StringBox*>(bits_ & kPtrMask)->s;
@@ -335,16 +345,34 @@ struct ReturnValue { Value value; };
 struct TailCall { Value fn; std::vector<Value> args; };
 thread_local std::optional<TailCall> g_tailCall;
 
-Value apply(Value fn, std::vector<Value> args) {
+Value apply(Value fn, std::vector<Value> newArgs) {
     while (true) {
         if (fn.kind() != Value::Kind::Function)
             throw std::runtime_error("ne ie na funzione");
-        Value result = fn.asFunction()(std::move(args));
+        FnBox* box = fn.fnBox();
+        std::vector<Value> allArgs = box->partial;
+        for (auto& a : newArgs) allArgs.push_back(std::move(a));
+        if (box->arity > 0 && (int)allArgs.size() < box->arity) {
+            auto* p = new FnBox;
+            p->arity = box->arity; p->partial = std::move(allArgs); p->fn = box->fn;
+            return Value::fromFnBox(p);
+        }
+        int ar = box->arity;
+        std::vector<Value> callArgs, remainArgs;
+        if (ar <= 0 || (int)allArgs.size() == ar) {
+            callArgs = std::move(allArgs);
+        } else {
+            for (int i = 0; i < ar; ++i) callArgs.push_back(std::move(allArgs[i]));
+            for (int i = ar; i < (int)allArgs.size(); ++i) remainArgs.push_back(std::move(allArgs[i]));
+        }
+        Value result = box->fn(std::move(callArgs));
+        if (!remainArgs.empty() && !g_tailCall) {
+            fn = std::move(result); newArgs = std::move(remainArgs); continue;
+        }
         if (!g_tailCall) return result;
         auto tc = std::move(*g_tailCall);
         g_tailCall.reset();
-        fn   = std::move(tc.fn);
-        args = std::move(tc.args);
+        fn = std::move(tc.fn); newArgs = std::move(tc.args);
     }
 }
 
@@ -615,47 +643,47 @@ Value putenze_impl(const Value& base, const Value& exp) {
 const Scioh::Value mappa = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::mappa_impl(args.at(0), args.at(1));
-    }));
-const Scioh::Value filtre =Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    }), 2);
+const Scioh::Value filtre = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::filtre_impl(args.at(0), args.at(1));
-    }));
-const Scioh::Value pieghe =Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
+    }), 2);
+const Scioh::Value pieghe = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::pieghe_impl(args.at(0), args.at(1), args.at(2));
-    }));
+    }), 3);
 const Scioh::Value inversa = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::inversa_impl(args.at(0));
-    }));
+    }), 1);
 const Scioh::Value pijje = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::pijje_impl(args.at(0), args.at(1));
-    }));
+    }), 2);
 const Scioh::Value lasse = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::lasse_impl(args.at(0), args.at(1));
-    }));
+    }), 2);
 const Scioh::Value uni = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::uni_impl(args.at(0), args.at(1));
-    }));
+    }), 2);
 const Scioh::Value assol = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::assol_impl(args.at(0));
-    }));
+    }), 1);
 const Scioh::Value massime = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::massime_impl(args.at(0), args.at(1));
-    }));
+    }), 2);
 const Scioh::Value mineme = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::mineme_impl(args.at(0), args.at(1));
-    }));
+    }), 2);
 const Scioh::Value putenze = Scioh::Value(std::function<Scioh::Value(std::vector<Scioh::Value>)>(
     [](std::vector<Scioh::Value> args) -> Scioh::Value {
         return Scioh::putenze_impl(args.at(0), args.at(1));
-    }));
+    }), 2);
 
 )SCIOH";
 
@@ -869,7 +897,7 @@ void Codegen::emitStatement(const Stmt& stmt, std::ostream& out, int indentLevel
                 else                 out << "args.at(" << i << ").asBoolean()";
             }
             out << "));\n";
-            out << indent(indentLevel) << "}));\n";
+            out << indent(indentLevel) << "}), " << fn.params.size() << ");\n";
             break;
         }
 
@@ -879,7 +907,7 @@ void Codegen::emitStatement(const Stmt& stmt, std::ostream& out, int indentLevel
             paramCppNames.push_back(declareSymbol(param, fn.location));
 
         std::ostringstream body;
-        body << indent(indentLevel) << "fn_" << fn.name << " = Scioh::Value{[&](std::vector<Scioh::Value> args) -> Scioh::Value {\n";
+        body << indent(indentLevel) << "fn_" << fn.name << " = Scioh::Value([&](std::vector<Scioh::Value> args) -> Scioh::Value {\n";
         body << indent(indentLevel + 1) << "try {\n";
         for (std::size_t i = 0; i < fn.params.size(); ++i)
             body << indent(indentLevel + 2) << "auto " << paramCppNames[i] << " = args.at(" << i << ");\n";
@@ -893,7 +921,7 @@ void Codegen::emitStatement(const Stmt& stmt, std::ostream& out, int indentLevel
         body << indent(indentLevel + 1) << "} catch (const Scioh::ReturnValue& ret) {\n";
         body << indent(indentLevel + 2) << "return ret.value;\n";
         body << indent(indentLevel + 1) << "}\n";
-        body << indent(indentLevel) << "}};\n";
+        body << indent(indentLevel) << "}, " << fn.params.size() << ");\n";
 
         out << body.str();
         popScope();
@@ -1016,7 +1044,7 @@ std::string Codegen::emitExpr(const Expr& expr) {
     case ExprKind::Lambda: {
         const auto& lambda = static_cast<const LambdaExpr&>(expr);
         std::ostringstream oss;
-        oss << "Scioh::Value{[=](std::vector<Scioh::Value> args) -> Scioh::Value {\n";
+        oss << "Scioh::Value([=](std::vector<Scioh::Value> args) -> Scioh::Value {\n";
         pushScope();
         for (std::size_t i = 0; i < lambda.params.size(); ++i) {
             const auto cpp = declareSymbol(lambda.params[i], lambda.location);
@@ -1024,7 +1052,7 @@ std::string Codegen::emitExpr(const Expr& expr) {
         }
         oss << "    return " << emitExpr(*lambda.body) << ";\n";
         popScope();
-        oss << "}}";
+        oss << "}, " << lambda.params.size() << ")";
         return oss.str();
     }
     }
