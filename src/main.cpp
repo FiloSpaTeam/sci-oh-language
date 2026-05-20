@@ -1,5 +1,6 @@
 #include "scioh/Codegen.hpp"
 #include "scioh/Diagnostic.hpp"
+#include "scioh/Infer.hpp"
 #include "scioh/Lexer.hpp"
 #include "scioh/Parser.hpp"
 
@@ -118,9 +119,12 @@ std::string compileToCpp(const std::string& source) {
     scioh::Parser parser(std::move(lexer));
     auto program = parser.parseProgram();
 
+    scioh::Infer infer;
+    infer.run(program);
+
     std::ostringstream out;
     scioh::Codegen codegen;
-    codegen.emit(program, out);
+    codegen.emit(program, out, infer.functionTypes());
     return out.str();
 }
 
