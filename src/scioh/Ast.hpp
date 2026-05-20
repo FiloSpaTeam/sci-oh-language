@@ -2,6 +2,7 @@
 
 #include "scioh/SourceLocation.hpp"
 #include "scioh/Token.hpp"
+#include "scioh/Type.hpp"
 
 #include <memory>
 #include <string>
@@ -33,6 +34,7 @@ struct Expr {
 
     ExprKind kind;
     SourceLocation location;
+    TyPtr ty; // inferred type; null = unknown → emit Scioh::Value
 };
 
 struct NumberExpr final : Expr {
